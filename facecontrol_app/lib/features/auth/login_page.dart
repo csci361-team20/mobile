@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-import 'eventlist_page.dart';
+import '../shared/eventlist_page.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
