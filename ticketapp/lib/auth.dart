@@ -6,9 +6,7 @@ import 'app_locale.dart';
 import 'l10n/generated/app_localizations.dart';
 import 'homepage.dart';
 
-import 'dart:convert';
-
-import 'package:http/http.dart' as http;
+import 'api_client.dart';
 
 //--------------------------------
 // My colors
@@ -214,69 +212,39 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   Future<void> _submit() async {
-    if (!_formKey.currentState!.validate()) return;
-
+    if (_isLoading || !_formKey.currentState!.validate()) return;
     FocusScope.of(context).unfocus();
-
     setState(() => _isLoading = true);
-
-    final email = _emailController.text.trim();
-    final password = _passwordController.text;
-
     try {
-      final response = await http.post(
-        Uri.parse('https://biletflow-api.vercel.app/api/v1/auth/login'),
-        headers: {'Accept': 'application/json'},
-        body: {'username': email, 'password': password},
+      final data = await ApiClient.instance.login(
+        _emailController.text.trim(),
+        _passwordController.text,
       );
-
-      final data = jsonDecode(response.body);
-
+      final user = CurrentUser.fromJson(data);
+      await AppLocale.setLocale(user.preferredLanguage);
+      final token = await AuthTokenStorage().accessToken() ?? '';
       if (!mounted) return;
-
-      if (response.statusCode == 200) {
-        final accessToken = data['access_token'] as String?;
-        final refreshToken = data['refresh_token'] as String?;
-
-        if (accessToken == null || refreshToken == null) {
-          throw Exception('Server did not return tokens');
-        }
-
-        await AuthTokenStorage().save(
-          accessToken: accessToken,
-          refreshToken: refreshToken,
-        );
-
-        final user = await fetchCurrentUser(accessToken);
-
-        if (!mounted) return;
-
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (context) =>
-                Homepage(accessToken: accessToken, currentUser: user),
-          ),
-        );
-      } else {
-        final message = data is Map
-            ? data['detail']?.toString() ??
-                  AppLocalizations.of(context)!.loginFailed
-            : AppLocalizations.of(context)!.loginFailed;
-
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(message)));
-      }
-    } catch (e) {
+      _passwordController.clear();
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(
+          builder: (_) => Homepage(accessToken: token, currentUser: user),
+        ),
+        (_) => false,
+      );
+    } catch (error) {
       if (!mounted) return;
-
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(AppLocalizations.of(context)!.connectionError)),
+        SnackBar(
+          content: Text(
+            error is ApiException
+                ? error.message
+                : AppLocalizations.of(context)!.connectionError,
+          ),
+        ),
       );
     } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -419,54 +387,43 @@ class _RegistrationPageState extends State<RegistrationPage> {
   }
 
   Future<void> _submit() async {
+    if (_isLoading || !_formKey.currentState!.validate()) return;
     FocusScope.of(context).unfocus();
-
-    if (!_formKey.currentState!.validate()) return;
-
     setState(() => _isLoading = true);
-
     try {
-      final response = await http.post(
-        Uri.parse('https://biletflow-api.vercel.app/api/v1/users/'),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: jsonEncode({
+      await ApiClient.instance.post(
+        '/users/',
+        authenticated: false,
+        body: {
           'full_name': _nameController.text.trim(),
           'email': _emailController.text.trim(),
           'password': _passwordController.text,
           'preferred_language': AppLocale.current.value.languageCode,
-        }),
+        },
       );
-
-      final data = jsonDecode(response.body);
-
       if (!mounted) return;
-
-      if (response.statusCode == 201) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(AppLocalizations.of(context)!.accountCreated)),
-        );
-      } else {
-        final message = data is Map
-            ? data['detail']?.toString() ??
-                  AppLocalizations.of(context)!.registrationFailed
-            : AppLocalizations.of(context)!.registrationFailed;
-
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(message)));
-      }
-    } catch (e) {
-      if (!mounted) return;
-
+      _passwordController.clear();
+      _confirmPasswordController.clear();
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(AppLocalizations.of(context)!.connectionError)),
+        SnackBar(content: Text(AppLocalizations.of(context)!.accountCreated)),
+      );
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => const LoginPage()),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            error is ApiException
+                ? error.message
+                : AppLocalizations.of(context)!.connectionError,
+          ),
+        ),
       );
     } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -657,55 +614,38 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
   }
 
   Future<void> _submit() async {
-    if (!_formKey.currentState!.validate()) return;
-
+    if (_isLoading || !_formKey.currentState!.validate()) return;
     FocusScope.of(context).unfocus();
-
     setState(() => _isLoading = true);
-
     try {
-      final response = await http.post(
-        Uri.parse(
-          'https://biletflow-api.vercel.app/api/v1/auth/password-reset/request',
-        ),
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-        },
-        body: jsonEncode({'email': _emailController.text.trim()}),
+      final data = await ApiClient.instance.post(
+        '/auth/password-reset/request',
+        authenticated: false,
+        body: {'email': _emailController.text.trim()},
       );
-
-      final data = jsonDecode(response.body);
-
       if (!mounted) return;
-
-      if (response.statusCode == 202) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              data['detail'] ?? AppLocalizations.of(context)!.checkEmailReset,
-            ),
-          ),
-        );
-      } else {
-        final message = data is Map
-            ? data['detail']?.toString() ??
-                  AppLocalizations.of(context)!.requestFailed
-            : AppLocalizations.of(context)!.requestFailed;
-
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text(message)));
-      }
-    } catch (e) {
-      if (!mounted) return;
-
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(AppLocalizations.of(context)!.connectionError)),
+        SnackBar(
+          content: Text(
+            data is Map && data['detail'] is String
+                ? data['detail'] as String
+                : 'If an account exists, a reset link has been sent.',
+          ),
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            error is ApiException
+                ? error.message
+                : AppLocalizations.of(context)!.connectionError,
+          ),
+        ),
       );
     } finally {
-      if (mounted) {
-        setState(() => _isLoading = false);
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 

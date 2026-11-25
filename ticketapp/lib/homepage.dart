@@ -1,4 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:qr_flutter/qr_flutter.dart';
+
+import 'api_client.dart';
+import 'app_locale.dart';
+import 'checkin_page.dart';
+import 'mobile_labels.dart';
+import 'mobile_operations_service.dart';
+import 'mobile_support_page.dart';
 
 import 'event_model.dart';
 import 'event_service.dart';
@@ -23,21 +31,12 @@ const RoundedRectangleBorder cardShape = RoundedRectangleBorder(
 );
 
 String formatDate(DateTime d) {
-  const months = [
-    'Jan',
-    'Feb',
-    'Mar',
-    'Apr',
-    'May',
-    'Jun',
-    'Jul',
-    'Aug',
-    'Sep',
-    'Oct',
-    'Nov',
-    'Dec',
-  ];
-  return '${d.day} ${months[d.month - 1]} ${d.year}';
+  final value = d.toUtc().add(const Duration(hours: 5));
+  final month = value.month.toString().padLeft(2, '0');
+  final day = value.day.toString().padLeft(2, '0');
+  final hour = value.hour.toString().padLeft(2, '0');
+  final minute = value.minute.toString().padLeft(2, '0');
+  return '${value.year}-$month-$day $hour:$minute UTC+05';
 }
 
 String formatPrice(int price) => price == 0 ? 'Free' : '$price ₸';
@@ -63,102 +62,6 @@ IconData categoryIcon(String category) {
 // Models + fake data
 //--------------------------------
 
-class TicketItem {
-  final String eventTitle;
-  final String ticketType;
-  final String place;
-  final DateTime date;
-  final int price;
-  String status; // Paid, Pending, Refunded
-
-  TicketItem({
-    required this.eventTitle,
-    required this.ticketType,
-    required this.place,
-    required this.date,
-    required this.price,
-    required this.status,
-  });
-}
-
-class OrganizerEvent {
-  final String title;
-  final DateTime date;
-  final int price;
-  final int sold;
-  final int capacity;
-  String status; // Draft, Published, Cancelled
-
-  OrganizerEvent({
-    required this.title,
-    required this.date,
-    required this.price,
-    required this.sold,
-    required this.capacity,
-    required this.status,
-  });
-}
-
-class SupportCase {
-  final String subject;
-  final String message;
-  final String status; // Open, Resolved
-
-  SupportCase({
-    required this.subject,
-    required this.message,
-    required this.status,
-  });
-}
-
-final List<TicketItem> allTickets = [
-  TicketItem(
-    eventTitle: 'Astana Jazz Night',
-    ticketType: 'VIP',
-    place: 'Astana Opera',
-    date: DateTime(2026, 12, 5),
-    price: 8000,
-    status: 'Paid',
-  ),
-  TicketItem(
-    eventTitle: 'Flutter Kazakhstan Meetup',
-    ticketType: 'Standard',
-    place: 'Astana Hub',
-    date: DateTime(2026, 12, 12),
-    price: 0,
-    status: 'Paid',
-  ),
-  TicketItem(
-    eventTitle: 'AI Conference 2027',
-    ticketType: 'Early bird',
-    place: 'Almaty Arena',
-    date: DateTime(2027, 2, 3),
-    price: 25000,
-    status: 'Pending',
-  ),
-  TicketItem(
-    eventTitle: 'Street Art Night',
-    ticketType: 'Standard',
-    place: 'Expo Center',
-    date: DateTime(2026, 10, 10),
-    price: 2000,
-    status: 'Paid',
-  ),
-  TicketItem(
-    eventTitle: 'Rock Fest 2026',
-    ticketType: 'Standard',
-    place: 'Almaty',
-    date: DateTime(2026, 9, 5),
-    price: 10000,
-    status: 'Refunded',
-  ),
-];
-
-//--------------------------------
-// Reusable widgets
-//--------------------------------
-
-// Orange rounded button, same style as the buttons in auth.dart
 class PrimaryButton extends StatelessWidget {
   final String text;
   final VoidCallback onPressed;
@@ -304,11 +207,34 @@ class Homepage extends StatefulWidget {
 class _HomepageState extends State<Homepage> {
   int selectedIndex = 0;
   late CurrentUser _user;
+  bool _leavingSession = false;
+  final _ticketsKey = GlobalKey<_TicketsTabState>();
 
   @override
   void initState() {
     super.initState();
     _user = widget.currentUser;
+    ApiClient.instance.authenticated.addListener(_sessionChanged);
+  }
+
+  void _sessionChanged() {
+    if (ApiClient.instance.authenticated.value || _leavingSession) return;
+    _leavingSession = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const AuthPage()),
+          (_) => false,
+        );
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    ApiClient.instance.authenticated.removeListener(_sessionChanged);
+    super.dispose();
   }
 
   Future<CurrentUser?> _refreshUser() async {
@@ -331,8 +257,9 @@ class _HomepageState extends State<Homepage> {
   Widget build(BuildContext context) {
     final tabs = <Widget>[
       EventsTab(accessToken: widget.accessToken),
-      TicketsTab(accessToken: widget.accessToken),
+      TicketsTab(key: _ticketsKey, accessToken: widget.accessToken),
       OrganizersTab(user: _user, onRefresh: _refreshUser),
+      const CheckinPage(),
       ProfileTab(user: _user, onRefresh: _refreshUser),
     ];
 
@@ -340,25 +267,35 @@ class _HomepageState extends State<Homepage> {
       body: IndexedStack(index: selectedIndex, children: tabs),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: selectedIndex,
-        onTap: (index) => setState(() => selectedIndex = index),
+        onTap: (index) {
+          if (index == 1) _ticketsKey.currentState?.reload();
+          setState(() => selectedIndex = index);
+        },
         selectedItemColor: AppColors.primaryColor,
         unselectedItemColor: AppColors.borderColor,
         backgroundColor: AppColors.accentColor,
         type: BottomNavigationBarType.fixed,
         elevation: 10,
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.event), label: 'Events'),
+        items: [
           BottomNavigationBarItem(
-            icon: Icon(Icons.confirmation_number_outlined),
-            label: 'Tickets',
+            icon: const Icon(Icons.event),
+            label: ml(context, 'Events'),
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.business_center_outlined),
-            label: 'For organizers',
+            icon: const Icon(Icons.confirmation_number_outlined),
+            label: ml(context, 'Tickets'),
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.person_outline),
-            label: 'Profile',
+            icon: const Icon(Icons.business_center_outlined),
+            label: ml(context, 'Organizers'),
+          ),
+          BottomNavigationBarItem(
+            icon: const Icon(Icons.qr_code_scanner),
+            label: ml(context, 'Check-in'),
+          ),
+          BottomNavigationBarItem(
+            icon: const Icon(Icons.person_outline),
+            label: ml(context, 'Profile'),
           ),
         ],
       ),
@@ -758,6 +695,16 @@ class _EventDetailsSheetState extends State<EventDetailsSheet> {
                 IconText(Icons.place_outlined, event.venueName),
 
               IconText(Icons.calendar_today, formatDate(event.startAt)),
+              TextButton.icon(
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => MobileSupportPage(eventId: event.id),
+                  ),
+                ),
+                icon: const Icon(Icons.support_agent),
+                label: Text(ml(context, 'Get support')),
+              ),
 
               if (event.description != null &&
                   event.description!.isNotEmpty) ...[
@@ -838,34 +785,33 @@ class _EventDetailsSheetState extends State<EventDetailsSheet> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       RadioGroup<String>(
-  groupValue: selected.id,
-  onChanged: (value) {
-    if (value == null) return;
+                        groupValue: selected.id,
+                        onChanged: (value) {
+                          if (value == null) return;
 
-    final ticket = availableTickets.firstWhere(
-      (ticket) => ticket.id == value,
-    );
+                          final ticket = availableTickets.firstWhere(
+                            (ticket) => ticket.id == value,
+                          );
 
-    setState(() {
-      _selectedTicket = ticket;
-      _quantity = 1;
-    });
-  },
-  child: Column(
-    children: availableTickets.map((ticket) {
-      return RadioListTile<String>(
-        contentPadding: EdgeInsets.zero,
-        value: ticket.id,
-        title: Text(ticket.name),
-        subtitle: Text(
-          '${formatPrice(ticket.priceKzt)}'
-          ' • ${ticket.available} available',
-        ),
-      );
-    }).toList(),
-  ),
-),
-
+                          setState(() {
+                            _selectedTicket = ticket;
+                            _quantity = 1;
+                          });
+                        },
+                        child: Column(
+                          children: availableTickets.map((ticket) {
+                            return RadioListTile<String>(
+                              contentPadding: EdgeInsets.zero,
+                              value: ticket.id,
+                              title: Text(ticket.name),
+                              subtitle: Text(
+                                '${formatPrice(ticket.priceKzt)}'
+                                ' • ${ticket.available} available',
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                      ),
 
                       const SizedBox(height: 12),
                       Row(
@@ -1010,10 +956,7 @@ class EventCard extends StatelessWidget {
 class TicketsTab extends StatefulWidget {
   final String accessToken;
 
-  const TicketsTab({
-    super.key,
-    required this.accessToken,
-  });
+  const TicketsTab({super.key, required this.accessToken});
 
   @override
   State<TicketsTab> createState() => _TicketsTabState();
@@ -1034,6 +977,10 @@ class _TicketsTabState extends State<TicketsTab> {
     _ticketsFuture = _eventService.fetchMyTickets(widget.accessToken);
   }
 
+  void reload() {
+    setState(_loadTickets);
+  }
+
   Future<void> _refreshTickets() async {
     setState(_loadTickets);
     await _ticketsFuture;
@@ -1044,9 +991,7 @@ class _TicketsTabState extends State<TicketsTab> {
       context: context,
       backgroundColor: AppColors.accentColor,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(
-          top: Radius.circular(20),
-        ),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (sheetContext) => Padding(
         padding: const EdgeInsets.all(24),
@@ -1067,10 +1012,7 @@ class _TicketsTabState extends State<TicketsTab> {
               Text(ticket.ticketTypeName),
               const SizedBox(height: 8),
 
-              IconText(
-                Icons.calendar_today,
-                formatDate(ticket.eventStartAt),
-              ),
+              IconText(Icons.calendar_today, formatDate(ticket.eventStartAt)),
 
               if (ticket.city.isNotEmpty)
                 IconText(Icons.location_on_outlined, ticket.city),
@@ -1082,19 +1024,28 @@ class _TicketsTabState extends State<TicketsTab> {
               StatusChip(ticket.status),
               const SizedBox(height: 20),
 
-              const Icon(Icons.qr_code_2, size: 100),
+              if (ticket.qrPayload?.isNotEmpty == true &&
+                  (ticket.status == 'valid' || ticket.status == 'checked_in'))
+                Container(
+                  color: Colors.white,
+                  padding: const EdgeInsets.all(12),
+                  child: QrImageView(
+                    data: ticket.qrPayload!,
+                    size: 220,
+                    backgroundColor: Colors.white,
+                  ),
+                )
+              else
+                Text(ml(sheetContext, 'QR payload is not available')),
               const SizedBox(height: 8),
 
-              const Text(
-                'Ticket QR payload',
-                style: TextStyle(fontWeight: FontWeight.bold),
+              Text(
+                ml(sheetContext, 'Ticket reference'),
+                style: const TextStyle(fontWeight: FontWeight.bold),
               ),
               const SizedBox(height: 8),
 
-              SelectableText(
-                ticket.qrPayload ?? 'QR payload is not available',
-                textAlign: TextAlign.center,
-              ),
+              SelectableText(ticket.id, textAlign: TextAlign.center),
 
               const SizedBox(height: 20),
               Text(
@@ -1104,6 +1055,19 @@ class _TicketsTabState extends State<TicketsTab> {
               Text(
                 ticket.attendeeEmail,
                 style: const TextStyle(color: Colors.black54),
+              ),
+              TextButton.icon(
+                onPressed: () => Navigator.push(
+                  sheetContext,
+                  MaterialPageRoute(
+                    builder: (_) => MobileSupportPage(
+                      ticketId: ticket.id,
+                      orderId: ticket.orderId,
+                    ),
+                  ),
+                ),
+                icon: const Icon(Icons.support_agent),
+                label: Text(ml(sheetContext, 'Get support')),
               ),
             ],
           ),
@@ -1135,15 +1099,9 @@ class _TicketsTabState extends State<TicketsTab> {
             ],
           ),
 
-          IconText(
-            Icons.confirmation_number_outlined,
-            ticket.ticketTypeName,
-          ),
+          IconText(Icons.confirmation_number_outlined, ticket.ticketTypeName),
 
-          IconText(
-            Icons.calendar_today,
-            formatDate(ticket.eventStartAt),
-          ),
+          IconText(Icons.calendar_today, formatDate(ticket.eventStartAt)),
 
           if (ticket.city.isNotEmpty)
             IconText(Icons.location_on_outlined, ticket.city),
@@ -1151,10 +1109,7 @@ class _TicketsTabState extends State<TicketsTab> {
           const SizedBox(height: 8),
           const Row(
             children: [
-              Icon(
-                Icons.qr_code_2,
-                color: AppColors.primaryColor,
-              ),
+              Icon(Icons.qr_code_2, color: AppColors.primaryColor),
               SizedBox(width: 6),
               Text(
                 'Tap to view ticket',
@@ -1185,12 +1140,17 @@ class _TicketsTabState extends State<TicketsTab> {
     );
 
     if (filtered.isEmpty) {
-      return Center(
-        child: Text(
-          upcoming
-              ? 'No upcoming tickets yet'
-              : 'No past tickets yet',
-        ),
+      return ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(32),
+            child: Text(
+              upcoming ? 'No upcoming tickets yet' : 'No past tickets yet',
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ],
       );
     }
 
@@ -1232,11 +1192,8 @@ class _TicketsTabState extends State<TicketsTab> {
               child: FutureBuilder<List<ApiTicket>>(
                 future: _ticketsFuture,
                 builder: (context, snapshot) {
-                  if (snapshot.connectionState ==
-                      ConnectionState.waiting) {
-                    return const Center(
-                      child: CircularProgressIndicator(),
-                    );
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
                   }
 
                   if (snapshot.hasError) {
@@ -1281,674 +1238,1177 @@ class _TicketsTabState extends State<TicketsTab> {
   }
 }
 
-
 //--------------------------------
 // Tab 3: For organizers
 //--------------------------------
 class OrganizersTab extends StatefulWidget {
   final CurrentUser user;
   final RefreshUser onRefresh;
-
   const OrganizersTab({super.key, required this.user, required this.onRefresh});
-
   @override
   State<OrganizersTab> createState() => _OrganizersTabState();
 }
 
 class _OrganizersTabState extends State<OrganizersTab> {
-  final _titleController = TextEditingController();
-
-  final List<OrganizerEvent> myEvents = [
-    OrganizerEvent(
-      title: 'Astana Jazz Night',
-      date: DateTime(2026, 12, 5),
-      price: 8000,
-      sold: 120,
-      capacity: 200,
-      status: 'Published',
-    ),
-    OrganizerEvent(
-      title: 'Winter Hackathon',
-      date: DateTime(2027, 1, 20),
-      price: 0,
-      sold: 0,
-      capacity: 100,
-      status: 'Draft',
-    ),
-    OrganizerEvent(
-      title: 'Old Meetup',
-      date: DateTime(2026, 11, 1),
-      price: 1000,
-      sold: 15,
-      capacity: 50,
-      status: 'Cancelled',
-    ),
-  ];
+  final _service = MobileOperationsService();
+  late Future<List<Map<String, dynamic>>> _events;
 
   @override
-  void dispose() {
-    _titleController.dispose();
-    super.dispose();
+  void initState() {
+    super.initState();
+    _events = _service.managedEvents();
   }
 
-  void handleAction(OrganizerEvent event, String action) {
-    setState(() {
-      if (action == 'publish') {
-        event.status = 'Published';
-      } else if (action == 'unpublish') {
-        event.status = 'Draft';
-      } else if (action == 'cancel') {
-        event.status = 'Cancelled';
-      } else if (action == 'duplicate') {
-        myEvents.add(
-          OrganizerEvent(
-            title: '${event.title} (copy)',
-            date: event.date,
-            price: event.price,
-            sold: 0,
-            capacity: event.capacity,
-            status: 'Draft',
-          ),
-        );
-      }
-    });
+  Future<void> _refresh() async {
+    final next = _service.managedEvents();
+    setState(() => _events = next);
+    await next;
   }
 
-  void showCreateDialog() {
-    showDialog(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('New event'),
-        content: TextField(
-          controller: _titleController,
-          decoration: const InputDecoration(labelText: 'Event title'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              final title = _titleController.text.trim();
-              if (title.isEmpty) return;
-              setState(() {
-                myEvents.add(
-                  OrganizerEvent(
-                    title: title,
-                    date: DateTime.now().add(const Duration(days: 30)),
-                    price: 0,
-                    sold: 0,
-                    capacity: 100,
-                    status: 'Draft',
-                  ),
-                );
-              });
-              _titleController.clear();
-              Navigator.pop(dialogContext);
-            },
-            child: const Text('Create'),
-          ),
-        ],
-      ),
+  Future<void> _openEditor() async {
+    await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => const MobileEventEditor()),
     );
-  }
-
-  Widget statBox(String label, String value) {
-    return Expanded(
-      child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 4),
-        padding: const EdgeInsets.symmetric(vertical: 14),
-        decoration: BoxDecoration(
-          color: AppColors.accentColor,
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(color: const Color(0xFFDDDDDD)),
-        ),
-        child: Column(
-          children: [
-            Text(
-              value,
-              style: const TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-                color: AppColors.primaryColor,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Text(
-              label,
-              style: const TextStyle(color: Colors.black54, fontSize: 12),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget buildEventCard(OrganizerEvent event) {
-    final progress = event.capacity == 0 ? 0.0 : event.sold / event.capacity;
-
-    return InfoCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  event.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-              StatusChip(event.status),
-              PopupMenuButton<String>(
-                onSelected: (action) => handleAction(event, action),
-                itemBuilder: (context) => [
-                  if (event.status == 'Draft')
-                    const PopupMenuItem(
-                      value: 'publish',
-                      child: Text('Publish'),
-                    ),
-                  if (event.status == 'Published')
-                    const PopupMenuItem(
-                      value: 'unpublish',
-                      child: Text('Unpublish'),
-                    ),
-                  const PopupMenuItem(
-                    value: 'duplicate',
-                    child: Text('Duplicate'),
-                  ),
-                  if (event.status != 'Cancelled')
-                    const PopupMenuItem(
-                      value: 'cancel',
-                      child: Text('Cancel event'),
-                    ),
-                ],
-              ),
-            ],
-          ),
-          IconText(Icons.calendar_today, formatDate(event.date)),
-          const SizedBox(height: 10),
-          Text('Sold: ${event.sold} / ${event.capacity}'),
-          const SizedBox(height: 6),
-          LinearProgressIndicator(
-            value: progress,
-            color: AppColors.primaryColor,
-            backgroundColor: const Color(0xFFDDDDDD),
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final locked = !widget.user.isEmailVerified;
-
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        // Содержимое вкладки. Пока locked — нажатия не проходят
-        IgnorePointer(ignoring: locked, child: buildContent()),
-        // Блокировка поверх содержимого
-        if (locked) buildLockOverlay(),
-      ],
-    );
-  }
-
-  Widget buildLockOverlay() {
-    return Positioned.fill(
-      child: Container(
-        // Цвет перехватывает нажатия и почти скрывает содержимое
-        color: AppColors.backgroundColor.withAlpha(235),
-        padding: const EdgeInsets.all(24),
-        child: Center(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(
-                Icons.lock_outline,
-                size: 72,
-                color: AppColors.primaryColor,
-              ),
-              const SizedBox(height: 16),
-              const Text(
-                'Verification required',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Verify your email ${widget.user.email} '
-                'to use organizer tools.',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.black54),
-              ),
-              const SizedBox(height: 24),
-              PrimaryButton(
-                text: 'Verify email',
-                onPressed: () => Navigator.push(
-                  context,
-                  MaterialPageRoute(
-                    builder: (_) => VerifyEmailPage(
-                      user: widget.user,
-                      onRefresh: widget.onRefresh,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget buildContent() {
-    final totalSold = myEvents.fold<int>(0, (sum, e) => sum + e.sold);
-    final revenue = myEvents.fold<int>(0, (sum, e) => sum + e.sold * e.price);
-
-    return SafeArea(
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          const Text('For organizers', style: pageTitle),
-          const SizedBox(height: 16),
-
-          // Verification banner
-
-          // Stats
-          Row(
-            children: [
-              statBox('Events', '${myEvents.length}'),
-              statBox('Tickets sold', '$totalSold'),
-              statBox('Revenue', '$revenue ₸'),
-            ],
-          ),
-          const SizedBox(height: 16),
-
-          PrimaryButton(text: '+ Create event', onPressed: showCreateDialog),
-          const SizedBox(height: 16),
-
-          const Text(
-            'My events',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 12),
-          ...myEvents.map(buildEventCard),
-        ],
-      ),
-    );
-  }
-}
-
-//--------------------------------
-// Tab 4: Profile
-//--------------------------------
-class ProfileTab extends StatelessWidget {
-  final CurrentUser user;
-  final RefreshUser onRefresh;
-
-  const ProfileTab({super.key, required this.user, required this.onRefresh});
-
-  void confirmLogout(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Log out'),
-        content: const Text('Are you sure you want to log out?'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () async {
-              Navigator.pop(dialogContext);
-              await logoutSession();
-              if (!context.mounted) return;
-              Navigator.pushAndRemoveUntil(
-                context,
-                MaterialPageRoute(builder: (_) => const AuthPage()),
-                (route) => false,
-              );
-            },
-            child: const Text('Log out', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget menuItem({
-    required IconData icon,
-    required String title,
-    required VoidCallback onTap,
-    Color color = AppColors.textMain,
-  }) {
-    return InfoCard(
-      onTap: onTap,
-      child: Row(
-        children: [
-          Icon(icon, color: color),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Text(title, style: TextStyle(fontSize: 16, color: color)),
-          ),
-          const Icon(Icons.chevron_right, color: Colors.black38),
-        ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          const Text('Profile', style: pageTitle),
-          const SizedBox(height: 24),
-
-          const Center(
-            child: CircleAvatar(
-              radius: 44,
-              backgroundColor: AppColors.primaryColor,
-              child: Icon(Icons.person, size: 48, color: Colors.white),
-            ),
-          ),
-          const SizedBox(height: 12),
-          Center(
-            child: Text(
-              user.fullName,
-              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-            ),
-          ),
-          Center(
-            child: Text(
-              user.email,
-              style: const TextStyle(color: Colors.black54),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Center(
-            child: StatusChip(
-              user.isEmailVerified ? 'Verified' : 'Not verified',
-            ),
-          ),
-          const SizedBox(height: 24),
-
-          if (!user.isEmailVerified)
-            menuItem(
-              icon: Icons.mark_email_unread_outlined,
-              title: 'Verify email',
-              onTap: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) =>
-                      VerifyEmailPage(user: user, onRefresh: onRefresh),
-                ),
-              ),
-            ),
-          menuItem(
-            icon: Icons.support_agent,
-            title: 'Support',
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const SupportPage()),
-            ),
-          ),
-          menuItem(
-            icon: Icons.logout,
-            title: 'Log out',
-            color: Colors.red,
-            onTap: () => confirmLogout(context),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-//--------------------------------
-// Verify profile screen
-//--------------------------------
-//--------------------------------
-// Verify email screen
-//--------------------------------
-class VerifyEmailPage extends StatefulWidget {
-  final CurrentUser user;
-  final RefreshUser onRefresh;
-
-  const VerifyEmailPage({
-    super.key,
-    required this.user,
-    required this.onRefresh,
-  });
-
-  @override
-  State<VerifyEmailPage> createState() => _VerifyEmailPageState();
-}
-
-class _VerifyEmailPageState extends State<VerifyEmailPage> {
-  bool _isLoading = false;
-
-  // Перезапрашивает профиль и смотрит, подтверждён ли email
-  Future<void> _checkStatus() async {
-    setState(() => _isLoading = true);
-    final fresh = await widget.onRefresh();
-    if (!mounted) return;
-    setState(() => _isLoading = false);
-
-    if (fresh == null) return; // ошибку уже показал Homepage
-
-    final messenger = ScaffoldMessenger.of(context);
-    if (fresh.isEmailVerified) {
-      Navigator.pop(context); // вкладка организатора уже разблокирована
-      messenger.showSnackBar(
-        const SnackBar(
-          content: Text('Email verified. Organizer tools unlocked!'),
-        ),
-      );
-    } else {
-      messenger.showSnackBar(
-        const SnackBar(content: Text('Email is not verified yet')),
-      );
+    if (mounted) {
+      setState(() => _events = _service.managedEvents());
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Verify email'),
-        backgroundColor: AppColors.accentColor,
-        foregroundColor: AppColors.borderColor,
-      ),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SizedBox(height: 24),
-              const Icon(
-                Icons.mark_email_unread_outlined,
-                size: 80,
-                color: AppColors.primaryColor,
-              ),
-              const SizedBox(height: 24),
-              Text(
-                widget.user.email,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
+    return SafeArea(
+      child: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(ml(context, 'For organizers'), style: pageTitle),
                 ),
-              ),
-              const SizedBox(height: 8),
-              const Center(child: StatusChip('Not verified')),
-              const SizedBox(height: 24),
-              const Text(
-                'Open the verification message we sent to this address '
-                '(check Spam too) and confirm your email. '
-                'Then come back and tap the button below.',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 16, color: Colors.black54),
-              ),
-              const SizedBox(height: 32),
-              PrimaryButton(
-                text: _isLoading ? 'Checking...' : "I've verified my email",
-                onPressed: _isLoading ? () {} : _checkStatus,
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-//--------------------------------
-// Support screen
-//--------------------------------
-class SupportPage extends StatefulWidget {
-  const SupportPage({super.key});
-
-  @override
-  State<SupportPage> createState() => _SupportPageState();
-}
-
-class _SupportPageState extends State<SupportPage> {
-  final _subjectController = TextEditingController();
-  final _messageController = TextEditingController();
-
-  final List<SupportCase> cases = [
-    SupportCase(
-      subject: 'Refund for Rock Fest',
-      message: 'I could not attend. Please refund.',
-      status: 'Resolved',
-    ),
-    SupportCase(
-      subject: 'Ticket PDF is empty',
-      message: 'The PDF does not show a QR code.',
-      status: 'Open',
-    ),
-  ];
-
-  @override
-  void dispose() {
-    _subjectController.dispose();
-    _messageController.dispose();
-    super.dispose();
-  }
-
-  void showNewCaseDialog() {
-    showDialog(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('New support case'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: _subjectController,
-              decoration: const InputDecoration(labelText: 'Subject'),
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _messageController,
-              maxLines: 3,
-              decoration: const InputDecoration(labelText: 'Message'),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              final subject = _subjectController.text.trim();
-              if (subject.isEmpty) return;
-              setState(() {
-                // insert(0, ...) puts the newest case on top
-                cases.insert(
-                  0,
-                  SupportCase(
-                    subject: subject,
-                    message: _messageController.text.trim(),
-                    status: 'Open',
+                IconButton(
+                  tooltip: ml(context, 'Refresh'),
+                  onPressed: () =>
+                      setState(() => _events = _service.managedEvents()),
+                  icon: const Icon(Icons.refresh),
+                ),
+                IconButton(
+                  tooltip: ml(context, 'Support'),
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => const MobileSupportPage(organizer: true),
+                    ),
                   ),
-                );
-              });
-              _subjectController.clear();
-              _messageController.clear();
-              Navigator.pop(dialogContext);
-            },
-            child: const Text('Send'),
+                  icon: const Icon(Icons.support_agent),
+                ),
+              ],
+            ),
           ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Support'),
-        backgroundColor: AppColors.accentColor,
-        foregroundColor: AppColors.borderColor,
-      ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: showNewCaseDialog,
-        backgroundColor: AppColors.primaryColor,
-        foregroundColor: Colors.white,
-        icon: const Icon(Icons.add),
-        label: const Text('New case'),
-      ),
-      body: cases.isEmpty
-          ? const Center(child: Text('No support cases yet'))
-          : ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: cases.length,
-              itemBuilder: (context, index) {
-                final item = cases[index];
-                return InfoCard(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
+          if (!widget.user.isEmailVerified)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Column(
+                children: [
+                  Text(ml(context, 'Verify your email to create events.')),
+                  TextButton(
+                    onPressed: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => VerifyEmailPage(
+                          user: widget.user,
+                          onRefresh: widget.onRefresh,
+                        ),
+                      ),
+                    ),
+                    child: Text(ml(context, 'Verify email')),
+                  ),
+                ],
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: SizedBox(
+              width: double.infinity,
+              child: FilledButton.icon(
+                onPressed: widget.user.isEmailVerified ? _openEditor : null,
+                icon: const Icon(Icons.add),
+                label: Text(ml(context, 'Create event')),
+              ),
+            ),
+          ),
+          Expanded(
+            child: FutureBuilder<List<Map<String, dynamic>>>(
+              future: _events,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Expanded(
-                            child: Text(
-                              item.subject,
-                              style: const TextStyle(
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
-                              ),
+                          Text('${snapshot.error}'),
+                          TextButton(
+                            onPressed: () => setState(
+                              () => _events = _service.managedEvents(),
                             ),
+                            child: Text(ml(context, 'Try again')),
                           ),
-                          StatusChip(item.status),
                         ],
                       ),
-                      const SizedBox(height: 8),
-                      Text(
-                        item.message,
-                        style: const TextStyle(color: Colors.black54),
-                      ),
+                    ),
+                  );
+                }
+                final events = snapshot.data ?? [];
+                return RefreshIndicator(
+                  onRefresh: _refresh,
+                  child: ListView(
+                    padding: const EdgeInsets.all(16),
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    children: [
+                      if (events.isEmpty)
+                        Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Text(
+                            ml(context, 'No managed events yet'),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      for (final event in events)
+                        InfoCard(
+                          onTap: () async {
+                            await Navigator.push<bool>(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => MobileManagedEventPage(
+                                  event: event,
+                                  isAdmin: widget.user.isPlatformAdmin,
+                                ),
+                              ),
+                            );
+                            if (mounted) {
+                              setState(
+                                () => _events = _service.managedEvents(),
+                              );
+                            }
+                          },
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '${event['title'] ?? ''}',
+                                style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                ml(
+                                  context,
+                                  '${event['lifecycle'] ?? event['status'] ?? ''}',
+                                ),
+                              ),
+                              Text(
+                                '${ml(context, 'Your role')}: ${ml(context, '${event['my_role'] ?? ''}')}',
+                              ),
+                              Text(
+                                '${event['venue_name'] ?? ''} · ${event['city'] ?? ''}',
+                              ),
+                              Text('${event['start_at'] ?? ''}'),
+                            ],
+                          ),
+                        ),
                     ],
                   ),
                 );
               },
             ),
+          ),
+        ],
+      ),
     );
   }
+}
+
+class MobileManagedEventPage extends StatefulWidget {
+  final Map<String, dynamic> event;
+  final bool isAdmin;
+  const MobileManagedEventPage({
+    super.key,
+    required this.event,
+    required this.isAdmin,
+  });
+  @override
+  State<MobileManagedEventPage> createState() => _MobileManagedEventPageState();
+}
+
+class _MobileManagedEventPageState extends State<MobileManagedEventPage> {
+  final _service = MobileOperationsService();
+  late Map<String, dynamic> _event;
+  late Future<List<Map<String, dynamic>>> _tickets;
+  bool _busy = false;
+  String? _error;
+  bool _changed = false;
+  String get _id => '${_event['id']}';
+  bool get _editable =>
+      _event['status'] != 'cancelled' &&
+      _event['lifecycle'] != 'completed' &&
+      _event['status'] != 'completed';
+  bool get _canManage =>
+      widget.isAdmin || ['owner', 'manager'].contains(_event['my_role']);
+
+  @override
+  void initState() {
+    super.initState();
+    _event = Map<String, dynamic>.from(widget.event);
+    _tickets = _service.ticketTypes(_id);
+  }
+
+  Future<void> _act(String action) async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      if (action == 'cancel') {
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (dialogContext) => AlertDialog(
+            title: Text(ml(context, 'Cancel event')),
+            content: Text(
+              ml(
+                context,
+                'Cancel this event? Paid orders are refunded by the backend and tickets become invalid.',
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext, false),
+                child: Text(ml(context, 'Cancel')),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialogContext, true),
+                child: Text(ml(context, 'Cancel event')),
+              ),
+            ],
+          ),
+        );
+        if (confirmed != true || !mounted) return;
+      }
+      final response = await _service.eventAction(_id, action);
+      if (!mounted) return;
+      _changed = true;
+      if (action == 'duplicate') {
+        Navigator.pop(context, true);
+        return;
+      }
+      setState(() {
+        _event = {...response, 'my_role': _event['my_role']};
+        _tickets = _service.ticketTypes(_id);
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = '$error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _edit() async {
+    final result = await Navigator.push<Map<String, dynamic>>(
+      context,
+      MaterialPageRoute(builder: (_) => MobileEventEditor(existing: _event)),
+    );
+    if (result != null && mounted) {
+      setState(() {
+        _event = {...result, 'my_role': _event['my_role']};
+        _changed = true;
+      });
+    }
+  }
+
+  Future<void> _addTicket() async {
+    final created = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => MobileTicketTypeEditor(eventId: _id)),
+    );
+    if (created == true && mounted) {
+      setState(() {
+        _tickets = _service.ticketTypes(_id);
+        _changed = true;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope(
+      canPop: !_busy,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text('${_event['title'] ?? ''}'),
+          leading: IconButton(
+            onPressed: _busy ? null : () => Navigator.pop(context, _changed),
+            icon: const Icon(Icons.arrow_back),
+          ),
+        ),
+        body: ListView(
+          padding: const EdgeInsets.all(20),
+          children: [
+            Text(
+              ml(context, '${_event['lifecycle'] ?? _event['status'] ?? ''}'),
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+            ),
+            Text('${_event['start_at'] ?? ''} – ${_event['end_at'] ?? ''}'),
+            Text('${_event['venue_name'] ?? ''} · ${_event['city'] ?? ''}'),
+            Text('${ml(context, 'Capacity')}: ${_event['capacity'] ?? ''}'),
+            if (_event['description'] != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                child: Text('${_event['description']}'),
+              ),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Text(_error!, style: const TextStyle(color: Colors.red)),
+              ),
+            if (_busy) const LinearProgressIndicator(),
+            if (_canManage)
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  if (_editable)
+                    OutlinedButton(
+                      onPressed: _busy ? null : _edit,
+                      child: Text(ml(context, 'Edit event')),
+                    ),
+                  if (_editable && _event['status'] == 'draft')
+                    FilledButton(
+                      onPressed: _busy ? null : () => _act('publish'),
+                      child: Text(ml(context, 'Publish')),
+                    ),
+                  if (_editable && _event['status'] == 'published')
+                    OutlinedButton(
+                      onPressed: _busy ? null : () => _act('unpublish'),
+                      child: Text(ml(context, 'Unpublish')),
+                    ),
+                  OutlinedButton(
+                    onPressed: _busy ? null : () => _act('duplicate'),
+                    child: Text(ml(context, 'Duplicate')),
+                  ),
+                  if (_editable &&
+                      (widget.isAdmin || _event['my_role'] == 'owner'))
+                    OutlinedButton(
+                      onPressed: _busy ? null : () => _act('cancel'),
+                      child: Text(ml(context, 'Cancel event')),
+                    ),
+                ],
+              ),
+            const SizedBox(height: 24),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    ml(context, 'Ticket types'),
+                    style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+                if (_editable &&
+                    _canManage &&
+                    _event['seating_type'] != 'assigned')
+                  IconButton(
+                    onPressed: _busy ? null : _addTicket,
+                    tooltip: ml(context, 'Add ticket type'),
+                    icon: const Icon(Icons.add),
+                  ),
+              ],
+            ),
+            FutureBuilder<List<Map<String, dynamic>>>(
+              future: _tickets,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return const LinearProgressIndicator();
+                }
+                if (snapshot.hasError) {
+                  return Column(
+                    children: [
+                      Text('${snapshot.error}'),
+                      TextButton(
+                        onPressed: () => setState(
+                          () => _tickets = _service.ticketTypes(_id),
+                        ),
+                        child: Text(ml(context, 'Try again')),
+                      ),
+                    ],
+                  );
+                }
+                final tickets = snapshot.data ?? [];
+                return Column(
+                  children: [
+                    if (tickets.isEmpty)
+                      Text(
+                        ml(
+                          context,
+                          'No ticket types yet. Add one before publishing.',
+                        ),
+                      ),
+                    for (final ticket in tickets)
+                      Card(
+                        child: ListTile(
+                          title: Text('${ticket['name'] ?? ''}'),
+                          subtitle: Text(
+                            '${ml(context, 'Quantity')}: ${ticket['quantity']}',
+                          ),
+                          trailing: Text('${ticket['price_kzt']} ₸'),
+                        ),
+                      ),
+                  ],
+                );
+              },
+            ),
+            const SizedBox(height: 20),
+            TextButton.icon(
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) =>
+                      MobileSupportPage(organizer: true, eventId: _id),
+                ),
+              ),
+              icon: const Icon(Icons.support_agent),
+              label: Text(ml(context, 'Get support')),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class MobileEventEditor extends StatefulWidget {
+  final Map<String, dynamic>? existing;
+  const MobileEventEditor({super.key, this.existing});
+  @override
+  State<MobileEventEditor> createState() => _MobileEventEditorState();
+}
+
+class _MobileEventEditorState extends State<MobileEventEditor> {
+  final _service = MobileOperationsService();
+  final _form = GlobalKey<FormState>();
+  late final Map<String, TextEditingController> _fields;
+  String _visibility = 'public';
+  bool _busy = false;
+  String? _error;
+  final _labels = const {
+    'title': 'Event title',
+    'description': 'Description',
+    'venue_name': 'Venue',
+    'city': 'City',
+    'capacity': 'Capacity',
+  };
+
+  @override
+  void initState() {
+    super.initState();
+    final existing = widget.existing;
+    final tomorrow = DateTime.now().toUtc().add(
+      const Duration(days: 1, hours: 5),
+    );
+    final start =
+        DateTime.tryParse('${existing?['start_at'] ?? ''}')
+            ?.toUtc()
+            .add(const Duration(hours: 5)) ??
+        DateTime(tomorrow.year, tomorrow.month, tomorrow.day, 19);
+    final end =
+        DateTime.tryParse('${existing?['end_at'] ?? ''}')
+            ?.toUtc()
+            .add(const Duration(hours: 5)) ??
+        start.add(const Duration(hours: 2));
+    String day(DateTime value) =>
+        '${value.year}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}';
+    String time(DateTime value) =>
+        '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}';
+    _fields = {
+      for (final key in _labels.keys)
+        key: TextEditingController(
+          text: '${existing?[key] ?? (key == 'capacity' ? 100 : '')}',
+        ),
+      'start_date': TextEditingController(text: day(start)),
+      'start_time': TextEditingController(text: time(start)),
+      'end_date': TextEditingController(text: day(end)),
+      'end_time': TextEditingController(text: time(end)),
+    };
+    _visibility = '${existing?['visibility'] ?? 'public'}';
+  }
+
+  @override
+  void dispose() {
+    for (final controller in _fields.values) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  Future<void> _pick(String key) async {
+    if (_busy) return;
+    final isDate = key.endsWith('date');
+    if (isDate) {
+      final value = await showDatePicker(
+        context: context,
+        initialDate: DateTime.tryParse(_fields[key]!.text) ?? DateTime.now(),
+        firstDate: DateTime(2000),
+        lastDate: DateTime(DateTime.now().year + 5),
+      );
+      if (value != null && mounted) {
+        setState(
+          () => _fields[key]!.text =
+              '${value.year}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}',
+        );
+      }
+    } else {
+      final parts = _fields[key]!.text.split(':');
+      final value = await showTimePicker(
+        context: context,
+        initialTime: TimeOfDay(
+          hour: int.tryParse(parts.first) ?? 19,
+          minute: int.tryParse(parts.last) ?? 0,
+        ),
+      );
+      if (value != null && mounted) {
+        setState(
+          () => _fields[key]!.text =
+              '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}',
+        );
+      }
+    }
+  }
+
+  Future<void> _save() async {
+    if (_busy || !_form.currentState!.validate()) return;
+    final start =
+        '${_fields['start_date']!.text}T${_fields['start_time']!.text}:00+05:00';
+    final end =
+        '${_fields['end_date']!.text}T${_fields['end_time']!.text}:00+05:00';
+    if (!DateTime.parse(end).isAfter(DateTime.parse(start))) {
+      setState(
+        () => _error = ml(context, 'The event must end after it starts.'),
+      );
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final body = <String, dynamic>{
+      for (final key in ['title', 'description', 'venue_name', 'city'])
+        key: _fields[key]!.text.trim(),
+      'start_at': start,
+      'end_at': end,
+      'capacity': int.parse(_fields['capacity']!.text),
+      'visibility': _visibility,
+      if (widget.existing == null) 'timezone': 'Asia/Almaty',
+    };
+    try {
+      final event = widget.existing == null
+          ? await _service.createEvent(body)
+          : await _service.updateEvent('${widget.existing!['id']}', body);
+      if (!mounted) return;
+      setState(() => _busy = false);
+      if (widget.existing == null) {
+        Navigator.pop(context, true);
+      } else {
+        Navigator.pop(context, event);
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _error = '$error';
+          _busy = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => PopScope(
+    canPop: !_busy,
+    child: Scaffold(
+      appBar: AppBar(
+        title: Text(
+          ml(context, widget.existing == null ? 'Create event' : 'Edit event'),
+        ),
+      ),
+      body: Form(
+        key: _form,
+        child: ListView(
+          padding: const EdgeInsets.all(20),
+          children: [
+            for (final entry in _labels.entries)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 16),
+                child: TextFormField(
+                  controller: _fields[entry.key],
+                  enabled: !_busy,
+                  decoration: InputDecoration(
+                    labelText: ml(context, entry.value),
+                  ),
+                  maxLines: entry.key == 'description' ? 3 : 1,
+                  maxLength: entry.key == 'title' ? 255 : null,
+                  keyboardType: entry.key == 'capacity'
+                      ? TextInputType.number
+                      : TextInputType.text,
+                  validator: (value) {
+                    if (entry.key == 'title' &&
+                        (value?.trim().length ?? 0) < 3) {
+                      return ml(
+                        context,
+                        'Use at least 3 characters for the title.',
+                      );
+                    }
+                    if (entry.key == 'capacity' &&
+                        (int.tryParse(value ?? '') ?? 0) < 1) {
+                      return ml(context, 'Enter a positive whole capacity.');
+                    }
+                    return null;
+                  },
+                ),
+              ),
+            Text(ml(context, 'Times are in Kazakhstan (UTC+05:00).')),
+            for (final entry in const {
+              'start_date': 'Start date',
+              'start_time': 'Start time',
+              'end_date': 'End date',
+              'end_time': 'End time',
+            }.entries)
+              Padding(
+                padding: const EdgeInsets.only(top: 16),
+                child: TextFormField(
+                  controller: _fields[entry.key],
+                  readOnly: true,
+                  enabled: !_busy,
+                  onTap: () => _pick(entry.key),
+                  decoration: InputDecoration(
+                    labelText: ml(context, entry.value),
+                    suffixIcon: Icon(
+                      entry.key.endsWith('date')
+                          ? Icons.calendar_today
+                          : Icons.schedule,
+                    ),
+                  ),
+                ),
+              ),
+            const SizedBox(height: 16),
+            DropdownButtonFormField<String>(
+              initialValue: _visibility,
+              decoration: InputDecoration(labelText: ml(context, 'Visibility')),
+              items: [
+                for (final value in ['public', 'unlisted', 'private'])
+                  DropdownMenuItem(
+                    value: value,
+                    child: Text(ml(context, value)),
+                  ),
+              ],
+              onChanged: _busy
+                  ? null
+                  : (value) => setState(() => _visibility = value!),
+            ),
+            if (widget.existing == null)
+              Padding(
+                padding: const EdgeInsets.only(top: 16),
+                child: Text(
+                  ml(
+                    context,
+                    'Create the event first, then add ticket types before publishing.',
+                  ),
+                ),
+              ),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Text(_error!, style: const TextStyle(color: Colors.red)),
+              ),
+            const SizedBox(height: 24),
+            FilledButton(
+              onPressed: _busy ? null : _save,
+              child: Text(ml(context, _busy ? 'Saving…' : 'Save')),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class MobileTicketTypeEditor extends StatefulWidget {
+  final String eventId;
+  const MobileTicketTypeEditor({super.key, required this.eventId});
+  @override
+  State<MobileTicketTypeEditor> createState() => _MobileTicketTypeEditorState();
+}
+
+class _MobileTicketTypeEditorState extends State<MobileTicketTypeEditor> {
+  final _service = MobileOperationsService();
+  final _form = GlobalKey<FormState>();
+  final _name = TextEditingController();
+  final _price = TextEditingController(text: '0');
+  final _quantity = TextEditingController(text: '100');
+  bool _busy = false;
+  String? _error;
+  @override
+  void dispose() {
+    _name.dispose();
+    _price.dispose();
+    _quantity.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (_busy || !_form.currentState!.validate()) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await _service.createTicketType(widget.eventId, {
+        'name': _name.text.trim(),
+        'price_kzt': int.parse(_price.text),
+        'quantity': int.parse(_quantity.text),
+      });
+      if (mounted) {
+        setState(() => _busy = false);
+        Navigator.pop(context, true);
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _error = '$error';
+          _busy = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => PopScope(
+    canPop: !_busy,
+    child: Scaffold(
+      appBar: AppBar(title: Text(ml(context, 'Add ticket type'))),
+      body: Form(
+        key: _form,
+        child: ListView(
+          padding: const EdgeInsets.all(20),
+          children: [
+            TextFormField(
+              controller: _name,
+              enabled: !_busy,
+              maxLength: 100,
+              decoration: InputDecoration(
+                labelText: ml(context, 'Ticket name'),
+              ),
+              validator: (value) => (value?.trim().length ?? 0) < 2
+                  ? ml(
+                      context,
+                      'Enter a ticket name, non-negative price and positive quantity.',
+                    )
+                  : null,
+            ),
+            TextFormField(
+              controller: _price,
+              enabled: !_busy,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(
+                labelText: ml(context, 'Price (KZT)'),
+              ),
+              validator: (value) => (int.tryParse(value ?? '') ?? -1) < 0
+                  ? ml(
+                      context,
+                      'Enter a ticket name, non-negative price and positive quantity.',
+                    )
+                  : null,
+            ),
+            TextFormField(
+              controller: _quantity,
+              enabled: !_busy,
+              keyboardType: TextInputType.number,
+              decoration: InputDecoration(labelText: ml(context, 'Quantity')),
+              validator: (value) => (int.tryParse(value ?? '') ?? 0) < 1
+                  ? ml(
+                      context,
+                      'Enter a ticket name, non-negative price and positive quantity.',
+                    )
+                  : null,
+            ),
+            if (_error != null)
+              Text(_error!, style: const TextStyle(color: Colors.red)),
+            const SizedBox(height: 24),
+            FilledButton(
+              onPressed: _busy ? null : _save,
+              child: Text(ml(context, _busy ? 'Saving…' : 'Save')),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class ProfileTab extends StatelessWidget {
+  final CurrentUser user;
+  final RefreshUser onRefresh;
+  const ProfileTab({super.key, required this.user, required this.onRefresh});
+
+  Future<void> _logout(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(ml(context, 'Log out')),
+        content: Text(ml(context, 'Are you sure you want to log out?')),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(ml(context, 'Cancel')),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(ml(context, 'Log out')),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) await logoutSession();
+  }
+
+  @override
+  Widget build(BuildContext context) => SafeArea(
+    child: ListView(
+      padding: const EdgeInsets.all(20),
+      children: [
+        Text(ml(context, 'Profile'), style: pageTitle),
+        const SizedBox(height: 24),
+        const Center(
+          child: CircleAvatar(
+            radius: 44,
+            backgroundColor: AppColors.primaryColor,
+            child: Icon(Icons.person, size: 48, color: Colors.white),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          user.fullName,
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+        ),
+        Text(user.email, textAlign: TextAlign.center),
+        const SizedBox(height: 12),
+        Center(
+          child: StatusChip(
+            ml(context, user.isEmailVerified ? 'Verified' : 'Not verified'),
+          ),
+        ),
+        const SizedBox(height: 24),
+        InfoCard(
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (_) =>
+                  MobileAccountEditor(user: user, onRefresh: onRefresh),
+            ),
+          ),
+          child: ListTile(
+            leading: const Icon(Icons.manage_accounts),
+            title: Text(ml(context, 'Account details')),
+            trailing: const Icon(Icons.chevron_right),
+          ),
+        ),
+        if (!user.isEmailVerified)
+          InfoCard(
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) =>
+                    VerifyEmailPage(user: user, onRefresh: onRefresh),
+              ),
+            ),
+            child: ListTile(
+              leading: const Icon(Icons.mark_email_unread_outlined),
+              title: Text(ml(context, 'Verify email')),
+              trailing: const Icon(Icons.chevron_right),
+            ),
+          ),
+        InfoCard(
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const MobileSupportPage()),
+          ),
+          child: ListTile(
+            leading: const Icon(Icons.support_agent),
+            title: Text(ml(context, 'Support')),
+            trailing: const Icon(Icons.chevron_right),
+          ),
+        ),
+        InfoCard(
+          onTap: () => _logout(context),
+          child: ListTile(
+            leading: const Icon(Icons.logout, color: Colors.red),
+            title: Text(
+              ml(context, 'Log out'),
+              style: const TextStyle(color: Colors.red),
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class MobileAccountEditor extends StatefulWidget {
+  final CurrentUser user;
+  final RefreshUser onRefresh;
+  const MobileAccountEditor({
+    super.key,
+    required this.user,
+    required this.onRefresh,
+  });
+  @override
+  State<MobileAccountEditor> createState() => _MobileAccountEditorState();
+}
+
+class _MobileAccountEditorState extends State<MobileAccountEditor> {
+  late final TextEditingController _name;
+  late String _language;
+  bool _busy = false;
+  String? _error;
+  @override
+  void initState() {
+    super.initState();
+    _name = TextEditingController(text: widget.user.fullName);
+    _language = widget.user.preferredLanguage;
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (_busy) return;
+    final name = _name.text.trim();
+    if (name.length < 2 ||
+        name.length > 100 ||
+        !RegExp(r"^[\p{L} '-]+$", unicode: true).hasMatch(name) ||
+        name.replaceAll(RegExp(r"[ '-]"), '').isEmpty) {
+      setState(
+        () => _error = ml(
+          context,
+          'Use 2–100 characters: letters, spaces, hyphens or apostrophes.',
+        ),
+      );
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await ApiClient.instance.patch(
+        '/users/me',
+        body: {'full_name': name, 'preferred_language': _language},
+      );
+      await AppLocale.setLocale(_language);
+      final fresh = await widget.onRefresh();
+      if (!mounted) return;
+      setState(() => _busy = false);
+      if (fresh != null) Navigator.pop(context);
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _error = '$error';
+          _busy = false;
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => PopScope(
+    canPop: !_busy,
+    child: Scaffold(
+      appBar: AppBar(title: Text(ml(context, 'Account details'))),
+      body: ListView(
+        padding: const EdgeInsets.all(20),
+        children: [
+          TextField(
+            controller: _name,
+            enabled: !_busy,
+            maxLength: 100,
+            autofillHints: const [AutofillHints.name],
+            decoration: InputDecoration(labelText: ml(context, 'Full name')),
+          ),
+          const SizedBox(height: 16),
+          DropdownButtonFormField<String>(
+            initialValue: _language,
+            decoration: InputDecoration(labelText: ml(context, 'Language')),
+            items: [
+              for (final entry in const {
+                'en': 'English',
+                'ru': 'Russian',
+                'kk': 'Kazakh',
+              }.entries)
+                DropdownMenuItem(
+                  value: entry.key,
+                  child: Text(ml(context, entry.value)),
+                ),
+            ],
+            onChanged: _busy
+                ? null
+                : (value) => setState(() => _language = value!),
+          ),
+          if (_error != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Text(_error!, style: const TextStyle(color: Colors.red)),
+            ),
+          const SizedBox(height: 24),
+          FilledButton(
+            onPressed: _busy ? null : _save,
+            child: Text(ml(context, _busy ? 'Saving…' : 'Save')),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class VerifyEmailPage extends StatefulWidget {
+  final CurrentUser user;
+  final RefreshUser onRefresh;
+  const VerifyEmailPage({
+    super.key,
+    required this.user,
+    required this.onRefresh,
+  });
+  @override
+  State<VerifyEmailPage> createState() => _VerifyEmailPageState();
+}
+
+class _VerifyEmailPageState extends State<VerifyEmailPage> {
+  final _token = TextEditingController();
+  bool _busy = false;
+  String? _error;
+  String? _notice;
+  @override
+  void dispose() {
+    _token.dispose();
+    super.dispose();
+  }
+
+  Future<void> _run(String action) async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+      _notice = null;
+    });
+    try {
+      if (action == 'request') {
+        await ApiClient.instance.post('/auth/verify-email/request');
+        if (mounted) {
+          setState(
+            () => _notice = ml(
+              context,
+              'Verification email requested. Check your inbox.',
+            ),
+          );
+        }
+      } else {
+        if (action == 'confirm') {
+          final text = _token.text.trim();
+          final token = Uri.tryParse(text)?.queryParameters['token'] ?? text;
+          if (token.length < 10) {
+            throw ApiException(400, ml(context, 'Verification token'));
+          }
+          await ApiClient.instance.post(
+            '/auth/verify-email/confirm',
+            body: {'token': token},
+          );
+        }
+        final fresh = await widget.onRefresh();
+        if (!mounted) return;
+        if (fresh?.isEmailVerified == true) {
+          Navigator.pop(context);
+          return;
+        }
+        setState(() => _notice = ml(context, 'Not verified'));
+      }
+    } catch (error) {
+      if (mounted) setState(() => _error = '$error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: Text(ml(context, 'Verify email'))),
+    body: ListView(
+      padding: const EdgeInsets.all(24),
+      children: [
+        const Icon(
+          Icons.mark_email_unread_outlined,
+          size: 72,
+          color: AppColors.primaryColor,
+        ),
+        const SizedBox(height: 20),
+        Text(
+          widget.user.email,
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          ml(
+            context,
+            'Open the emailed link, or paste its token here, then refresh your profile.',
+          ),
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 16),
+        OutlinedButton(
+          onPressed: _busy ? null : () => _run('request'),
+          child: Text(ml(context, 'Request verification email')),
+        ),
+        TextField(
+          controller: _token,
+          enabled: !_busy,
+          maxLength: 2048,
+          decoration: InputDecoration(
+            labelText: ml(context, 'Verification token'),
+          ),
+        ),
+        FilledButton(
+          onPressed: _busy ? null : () => _run('confirm'),
+          child: Text(ml(context, 'Confirm token')),
+        ),
+        OutlinedButton(
+          onPressed: _busy ? null : () => _run('refresh'),
+          child: Text(ml(context, 'Refresh')),
+        ),
+        if (_busy) const LinearProgressIndicator(),
+        if (_error != null)
+          Text(_error!, style: const TextStyle(color: Colors.red)),
+        if (_notice != null) Text(_notice!),
+      ],
+    ),
+  );
 }

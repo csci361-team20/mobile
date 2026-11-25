@@ -7,10 +7,13 @@ class AppLocale {
   );
 
   static Future<void> load() async {
-    final prefs = await SharedPreferences.getInstance();
-    final languageCode = prefs.getString('preferred_language') ?? 'en';
-
-    current.value = Locale(languageCode);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final languageCode = prefs.getString('preferred_language') ?? 'en';
+      current.value = Locale(['en', 'ru', 'kk'].contains(languageCode) ? languageCode : 'en');
+    } catch (_) {
+      current.value = const Locale('en');
+    }
   }
 
   static Future<void> setLocale(String languageCode) async {

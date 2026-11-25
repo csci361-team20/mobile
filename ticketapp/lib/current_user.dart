@@ -1,6 +1,4 @@
-import 'dart:convert';
-
-import 'package:http/http.dart' as http;
+import 'api_client.dart';
 
 class CurrentUser {
   final String id;
@@ -21,8 +19,6 @@ class CurrentUser {
     required this.preferredLanguage,
   });
 
-  
-
   factory CurrentUser.fromJson(Map<String, dynamic> json) {
     return CurrentUser(
       id: json['id'].toString(),
@@ -37,23 +33,7 @@ class CurrentUser {
 }
 
 Future<CurrentUser> fetchCurrentUser(String accessToken) async {
-  final response = await http.get(
-    Uri.parse('https://biletflow-api.vercel.app/api/v1/users/me'),
-    headers: {
-      'Accept': 'application/json',
-      'Authorization': 'Bearer $accessToken',
-    },
-  );
-    if (response.statusCode == 401) throw UnauthorizedException();
-
-  if (response.statusCode != 200) {
-    throw Exception('Failed to load profile (${response.statusCode})');
-  }
-
-  final data = jsonDecode(utf8.decode(response.bodyBytes))
-      as Map<String, dynamic>;
-
-  return CurrentUser.fromJson(data);
+  return CurrentUser.fromJson(await ApiClient.instance.currentUser());
 }
 
 class UnauthorizedException implements Exception {

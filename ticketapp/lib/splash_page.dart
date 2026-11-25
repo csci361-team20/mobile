@@ -5,6 +5,7 @@ import 'auth_token_storage.dart';
 import 'current_user.dart';
 import 'homepage.dart';
 import 'session_service.dart';
+import 'api_client.dart';
 
 class SplashPage extends StatefulWidget {
   const SplashPage({super.key});
@@ -14,7 +15,7 @@ class SplashPage extends StatefulWidget {
 }
 
 class _SplashPageState extends State<SplashPage> {
-  bool _failed = false; 
+  bool _failed = false;
 
   @override
   void initState() {
@@ -28,28 +29,25 @@ class _SplashPageState extends State<SplashPage> {
 
     try {
       final saved = await storage.accessToken();
-      if (saved == null) {
+      final refresh = await storage.refreshToken();
+      if (saved == null && refresh == null) {
         _openAuth();
         return;
       }
 
-      String accessToken = saved;
-      CurrentUser user;
-
-      try {
-        user = await fetchCurrentUser(accessToken);
-      } on UnauthorizedException {
-        final newToken = await refreshSession();
-        if (newToken == null) {
-          await storage.clear();
-          _openAuth();
-          return;
-        }
-        accessToken = newToken;
-        user = await fetchCurrentUser(newToken);
+      if (saved == null && await refreshSession() == null) {
+        _openAuth();
+        return;
       }
-
+      final user = await fetchCurrentUser('');
+      final accessToken = await storage.accessToken() ?? '';
       _openHome(accessToken, user);
+    } on ApiException catch (error) {
+      if (error.statusCode == 401) {
+        _openAuth();
+      } else if (mounted) {
+        setState(() => _failed = true);
+      }
     } catch (_) {
       if (mounted) setState(() => _failed = true);
     }
