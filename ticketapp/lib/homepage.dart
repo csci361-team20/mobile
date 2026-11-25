@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
-
-import 'auth.dart' show AppColors, AuthPage, Validators;
+import 'current_user.dart';
+import 'auth_service.dart';
+import 'auth.dart' show AppColors, AuthPage;
 
 //--------------------------------
 // Shared styles and small helpers
@@ -288,6 +289,8 @@ class StatusChip extends StatelessWidget {
       case 'Published':
       case 'Resolved':
         return Colors.green;
+      case 'Verified':
+        return Colors.green;
       case 'Pending':
       case 'Open':
         return Colors.orange;
@@ -351,8 +354,16 @@ class IconText extends StatelessWidget {
 //--------------------------------
 // Main page with bottom navigation
 //--------------------------------
+typedef RefreshUser = Future<CurrentUser?> Function();
 class Homepage extends StatefulWidget {
-  const Homepage({super.key});
+  final String accessToken;
+  final CurrentUser currentUser;
+
+  const Homepage({
+    super.key,
+    required this.accessToken,
+    required this.currentUser,
+  });
 
   @override
   State<Homepage> createState() => _HomepageState();
@@ -360,18 +371,41 @@ class Homepage extends StatefulWidget {
 
 class _HomepageState extends State<Homepage> {
   int selectedIndex = 0;
+  late CurrentUser _user;
 
-  final List<Widget> tabs = const [
-    EventsTab(),
-    TicketsTab(),
-    OrganizersTab(),
-    ProfileTab(),
-  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _user = widget.currentUser;
+  }
+
+  Future<CurrentUser?> _refreshUser() async {
+    try {
+      final fresh = await fetchCurrentUser(widget.accessToken);
+      if (!mounted) return null;
+      setState(() => _user = fresh);
+      return fresh;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not refresh profile: $e')),
+        );
+      }
+      return null;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final tabs = <Widget>[
+      const EventsTab(),
+      const TicketsTab(),
+      OrganizersTab(user: _user, onRefresh: _refreshUser),
+      ProfileTab(user: _user, onRefresh: _refreshUser),
+    ];
+
     return Scaffold(
-      // IndexedStack keeps every tab alive (search text, scroll position)
       body: IndexedStack(index: selectedIndex, children: tabs),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: selectedIndex,
@@ -810,7 +844,14 @@ class _TicketsTabState extends State<TicketsTab> {
 // Tab 3: For organizers
 //--------------------------------
 class OrganizersTab extends StatefulWidget {
-  const OrganizersTab({super.key});
+  final CurrentUser user;
+  final RefreshUser onRefresh;
+
+  const OrganizersTab({
+    super.key,
+    required this.user,
+    required this.onRefresh,
+  });
 
   @override
   State<OrganizersTab> createState() => _OrganizersTabState();
@@ -1006,9 +1047,70 @@ class _OrganizersTabState extends State<OrganizersTab> {
       ),
     );
   }
+@override
+Widget build(BuildContext context) {
+  final locked = !widget.user.isEmailVerified;
 
-  @override
-  Widget build(BuildContext context) {
+  return Stack(
+    fit: StackFit.expand,
+    children: [
+      // Содержимое вкладки. Пока locked — нажатия не проходят
+      IgnorePointer(ignoring: locked, child: buildContent()),
+      // Блокировка поверх содержимого
+      if (locked) buildLockOverlay(),
+    ],
+  );
+}
+
+Widget buildLockOverlay() {
+  return Positioned.fill(
+    child: Container(
+      // Цвет перехватывает нажатия и почти скрывает содержимое
+      color: AppColors.backgroundColor.withAlpha(235),
+      padding: const EdgeInsets.all(24),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.lock_outline,
+              size: 72,
+              color: AppColors.primaryColor,
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Verification required',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Verify your email ${widget.user.email} '
+              'to use organizer tools.',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.black54),
+            ),
+            const SizedBox(height: 24),
+            PrimaryButton(
+              text: 'Verify email',
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => VerifyEmailPage(
+                    user: widget.user,
+                    onRefresh: widget.onRefresh,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+  Widget buildContent() {
     final totalSold = myEvents.fold<int>(0, (sum, e) => sum + e.sold);
     final revenue = myEvents.fold<int>(0, (sum, e) => sum + e.sold * e.price);
 
@@ -1020,32 +1122,7 @@ class _OrganizersTabState extends State<OrganizersTab> {
           const SizedBox(height: 16),
 
           // Verification banner
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: Colors.orange.withAlpha(40),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.verified_user_outlined, color: Colors.orange),
-                const SizedBox(width: 10),
-                const Expanded(
-                  child: Text('Verify your identity to sell paid tickets'),
-                ),
-                TextButton(
-                  onPressed: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                      builder: (_) => const VerifyProfilePage(),
-                    ),
-                  ),
-                  child: const Text('Verify'),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
+          
 
           // Stats
           Row(
@@ -1076,7 +1153,10 @@ class _OrganizersTabState extends State<OrganizersTab> {
 // Tab 4: Profile
 //--------------------------------
 class ProfileTab extends StatelessWidget {
-  const ProfileTab({super.key});
+  final CurrentUser user;
+  final RefreshUser onRefresh;
+
+  const ProfileTab({super.key, required this.user, required this.onRefresh});
 
   void confirmLogout(BuildContext context) {
     showDialog(
@@ -1090,17 +1170,18 @@ class ProfileTab extends StatelessWidget {
             child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () {
-              Navigator.pop(dialogContext);
-              // Go back to the login screen and remove all previous screens
-              Navigator.pushAndRemoveUntil(
-                context,
-                MaterialPageRoute(builder: (_) => const AuthPage()),
-                (route) => false,
-              );
-            },
-            child: const Text('Log out', style: TextStyle(color: Colors.red)),
-          ),
+  onPressed: () async {
+    Navigator.pop(dialogContext);
+    await logoutSession();
+    if (!context.mounted) return;
+    Navigator.pushAndRemoveUntil(
+      context,
+      MaterialPageRoute(builder: (_) => const AuthPage()),
+      (route) => false,
+    );
+  },
+  child: const Text('Log out', style: TextStyle(color: Colors.red)),
+),
         ],
       ),
     );
@@ -1128,161 +1209,164 @@ class ProfileTab extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          const Text('Profile', style: pageTitle),
-          const SizedBox(height: 24),
+Widget build(BuildContext context) {
+  return SafeArea(
+    child: ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        const Text('Profile', style: pageTitle),
+        const SizedBox(height: 24),
 
-          // User info
-          const Center(
-            child: CircleAvatar(
-              radius: 44,
-              backgroundColor: AppColors.primaryColor,
-              child: Icon(Icons.person, size: 48, color: Colors.white),
-            ),
-          ),
-          const SizedBox(height: 12),
-          const Center(
-            child: Text(
-              'Aidar Nurlan',
-              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-            ),
-          ),
-          const Center(
-            child: Text(
-              'aidar@example.com',
-              style: TextStyle(color: Colors.black54),
-            ),
-          ),
-          const SizedBox(height: 8),
-          const Center(child: StatusChip('Not verified')),
-          const SizedBox(height: 24),
 
+        const Center(
+          child: CircleAvatar(
+            radius: 44,
+            backgroundColor: AppColors.primaryColor,
+            child: Icon(Icons.person, size: 48, color: Colors.white),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Center(
+          child: Text(
+            user.fullName,
+            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+          ),
+        ),
+        Center(
+          child: Text(
+            user.email,
+            style: const TextStyle(color: Colors.black54),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Center(
+          child: StatusChip(user.isEmailVerified ? 'Verified' : 'Not verified'),
+        ),
+        const SizedBox(height: 24),
+
+
+        if (!user.isEmailVerified)
           menuItem(
-            icon: Icons.verified_user_outlined,
-            title: 'Verify profile',
+            icon: Icons.mark_email_unread_outlined,
+            title: 'Verify email',
             onTap: () => Navigator.push(
               context,
-              MaterialPageRoute(builder: (_) => const VerifyProfilePage()),
+              MaterialPageRoute(
+                builder: (_) =>
+                    VerifyEmailPage(user: user, onRefresh: onRefresh),
+              ),
             ),
           ),
-          menuItem(
-            icon: Icons.support_agent,
-            title: 'Support',
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const SupportPage()),
-            ),
+        menuItem(
+          icon: Icons.support_agent,
+          title: 'Support',
+          onTap: () => Navigator.push(
+            context,
+            MaterialPageRoute(builder: (_) => const SupportPage()),
           ),
-          menuItem(
-            icon: Icons.logout,
-            title: 'Log out',
-            color: Colors.red,
-            onTap: () => confirmLogout(context),
-          ),
-        ],
-      ),
-    );
-  }
+        ),
+        menuItem(
+          icon: Icons.logout,
+          title: 'Log out',
+          color: Colors.red,
+          onTap: () => confirmLogout(context),
+        ),
+      ],
+    ),
+  );
+}
 }
 
 //--------------------------------
 // Verify profile screen
 //--------------------------------
-class VerifyProfilePage extends StatefulWidget {
-  const VerifyProfilePage({super.key});
+//--------------------------------
+// Verify email screen
+//--------------------------------
+class VerifyEmailPage extends StatefulWidget {
+  final CurrentUser user;
+  final RefreshUser onRefresh;
+
+  const VerifyEmailPage({
+    super.key,
+    required this.user,
+    required this.onRefresh,
+  });
 
   @override
-  State<VerifyProfilePage> createState() => _VerifyProfilePageState();
+  State<VerifyEmailPage> createState() => _VerifyEmailPageState();
 }
 
-class _VerifyProfilePageState extends State<VerifyProfilePage> {
-  final _formKey = GlobalKey<FormState>();
-  final _nameController = TextEditingController();
-  final _idController = TextEditingController();
+class _VerifyEmailPageState extends State<VerifyEmailPage> {
+  bool _isLoading = false;
 
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _idController.dispose();
-    super.dispose();
-  }
+  // Перезапрашивает профиль и смотрит, подтверждён ли email
+  Future<void> _checkStatus() async {
+    setState(() => _isLoading = true);
+    final fresh = await widget.onRefresh();
+    if (!mounted) return;
+    setState(() => _isLoading = false);
 
-  void _submit() {
-    if (!_formKey.currentState!.validate()) return;
+    if (fresh == null) return; // ошибку уже показал Homepage
 
-    // Server request will be here later
-    Navigator.pop(context);
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Verification request sent')));
+    final messenger = ScaffoldMessenger.of(context);
+    if (fresh.isEmailVerified) {
+      Navigator.pop(context); // вкладка организатора уже разблокирована
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Email verified. Organizer tools unlocked!')),
+      );
+    } else {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Email is not verified yet')),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Verify profile'),
+        title: const Text('Verify email'),
         backgroundColor: AppColors.accentColor,
         foregroundColor: AppColors.borderColor,
       ),
       body: SafeArea(
-        child: SingleChildScrollView(
+        child: Padding(
           padding: const EdgeInsets.all(24),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Text(
-                  'Confirm your identity to become a verified organizer.',
-                  style: TextStyle(fontSize: 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const SizedBox(height: 24),
+              const Icon(
+                Icons.mark_email_unread_outlined,
+                size: 80,
+                color: AppColors.primaryColor,
+              ),
+              const SizedBox(height: 24),
+              Text(
+                widget.user.email,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
                 ),
-                const SizedBox(height: 24),
-                TextFormField(
-                  controller: _nameController,
-                  decoration: const InputDecoration(
-                    labelText: 'Full legal name',
-                    prefixIcon: Icon(Icons.person),
-                  ),
-                  validator: (v) => Validators.required(v, field: 'Name'),
-                ),
-                const SizedBox(height: 24),
-                TextFormField(
-                  controller: _idController,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'ID number (IIN)',
-                    prefixIcon: Icon(Icons.badge_outlined),
-                  ),
-                  validator: (v) {
-                    if (v == null || v.trim().length != 12) {
-                      return 'IIN must contain 12 digits';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 24),
-                OutlinedButton.icon(
-                  onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Demo: photo upload')),
-                    );
-                  },
-                  icon: const Icon(Icons.upload_file),
-                  label: const Text('Upload ID photo'),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppColors.borderColor,
-                    minimumSize: const Size.fromHeight(55),
-                  ),
-                ),
-                const SizedBox(height: 32),
-                PrimaryButton(text: 'Submit', onPressed: _submit),
-              ],
-            ),
+              ),
+              const SizedBox(height: 8),
+              const Center(child: StatusChip('Not verified')),
+              const SizedBox(height: 24),
+              const Text(
+                'Open the verification message we sent to this address '
+                '(check Spam too) and confirm your email. '
+                'Then come back and tap the button below.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 16, color: Colors.black54),
+              ),
+              const SizedBox(height: 32),
+              PrimaryButton(
+                text: _isLoading ? 'Checking...' : "I've verified my email",
+                onPressed: _isLoading ? () {} : _checkStatus,
+              ),
+            ],
           ),
         ),
       ),
@@ -1291,7 +1375,7 @@ class _VerifyProfilePageState extends State<VerifyProfilePage> {
 }
 
 //--------------------------------
-// Support screen (list of cases + new case)
+// Support screen
 //--------------------------------
 class SupportPage extends StatefulWidget {
   const SupportPage({super.key});

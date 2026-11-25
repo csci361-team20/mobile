@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 
+import 'current_user.dart';
+import 'auth_token_storage.dart';
+import 'app_locale.dart';
+import 'l10n/generated/app_localizations.dart';
 import 'homepage.dart';
 
 import 'dart:convert';
@@ -45,47 +49,70 @@ class AuthPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        primaryColor: AppColors.primaryColor,
-        scaffoldBackgroundColor: AppColors.backgroundColor,
-        inputDecorationTheme: InputDecorationTheme(
-          filled: true,
-          fillColor: AppColors.accentColor,
-          contentPadding: const EdgeInsets.symmetric(
-            vertical: 16,
-            horizontal: 16,
+    return const HomePage();
+  }
+}
+
+class LanguageSelector extends StatelessWidget {
+  const LanguageSelector({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final locale = Localizations.localeOf(context);
+
+    final currentLanguage = switch (locale.languageCode) {
+      'ru' => 'RU',
+      'kk' => 'KK',
+      _ => 'EN',
+    };
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: PopupMenuButton<String>(
+        onSelected: (languageCode) {
+          AppLocale.setLocale(languageCode);
+        },
+        color: Colors.white,
+        elevation: 4,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(5)),
+        itemBuilder: (context) => const [
+          PopupMenuItem(value: 'en', child: Text('🇬🇧  English')),
+          PopupMenuItem(value: 'ru', child: Text('🇷🇺  Русский')),
+          PopupMenuItem(value: 'kk', child: Text('🇰🇿  Қазақша')),
+        ],
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: AppColors.borderColor, width: 0.7),
           ),
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(5),
-            borderSide: BorderSide.none,
-          ),
-          enabledBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(5),
-            borderSide: const BorderSide(
-              color: AppColors.borderColor,
-              width: 1,
-            ),
-          ),
-          focusedBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(5),
-            borderSide: const BorderSide(
-              color: AppColors.primaryColor,
-              width: 2,
-            ),
-          ),
-          errorBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(5),
-            borderSide: const BorderSide(color: Colors.red, width: 1),
-          ),
-          focusedErrorBorder: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(5),
-            borderSide: const BorderSide(color: Colors.red, width: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.language,
+                size: 18,
+                color: AppColors.primaryColor,
+              ),
+              const SizedBox(width: 7),
+              Text(
+                currentLanguage,
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.borderColor,
+                ),
+              ),
+              const SizedBox(width: 4),
+              const Icon(
+                Icons.keyboard_arrow_down,
+                size: 18,
+                color: AppColors.borderColor,
+              ),
+            ],
           ),
         ),
       ),
-      home: const HomePage(),
     );
   }
 }
@@ -145,15 +172,18 @@ class _HomePageState extends State<HomePage> {
         type: BottomNavigationBarType.fixed,
         elevation: 10,
 
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.login), label: 'Login'),
+        items: [
           BottomNavigationBarItem(
-            icon: Icon(Icons.person_add_alt_1),
-            label: 'Registration',
+            icon: const Icon(Icons.login),
+            label: AppLocalizations.of(context)!.loginTab,
           ),
           BottomNavigationBarItem(
-            icon: Icon(Icons.lock_reset),
-            label: 'Forgot Password',
+            icon: const Icon(Icons.person_add_alt_1),
+            label: AppLocalizations.of(context)!.registrationTab,
+          ),
+          BottomNavigationBarItem(
+            icon: const Icon(Icons.lock_reset),
+            label: AppLocalizations.of(context)!.forgotPasswordTab,
           ),
         ],
       ),
@@ -205,18 +235,34 @@ class _LoginPageState extends State<LoginPage> {
       if (!mounted) return;
 
       if (response.statusCode == 200) {
-        final accessToken = data['access_token'];
+        final accessToken = data['access_token'] as String?;
+        final refreshToken = data['refresh_token'] as String?;
+
+        if (accessToken == null || refreshToken == null) {
+          throw Exception('Server did not return tokens');
+        }
+
+        await AuthTokenStorage().save(
+          accessToken: accessToken,
+          refreshToken: refreshToken,
+        );
+
+        final user = await fetchCurrentUser(accessToken);
 
         if (!mounted) return;
 
         Navigator.pushReplacement(
           context,
-          MaterialPageRoute(builder: (context) => const Homepage()),
+          MaterialPageRoute(
+            builder: (context) =>
+                Homepage(accessToken: accessToken, currentUser: user),
+          ),
         );
       } else {
         final message = data is Map
-            ? data['detail']?.toString() ?? 'Login failed'
-            : 'Login failed';
+            ? data['detail']?.toString() ??
+                  AppLocalizations.of(context)!.loginFailed
+            : AppLocalizations.of(context)!.loginFailed;
 
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(message)));
@@ -224,8 +270,9 @@ class _LoginPageState extends State<LoginPage> {
     } catch (e) {
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Connection error: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(AppLocalizations.of(context)!.connectionError)),
+      );
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
@@ -236,21 +283,19 @@ class _LoginPageState extends State<LoginPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      //appBar: AppBar(title: const Text('Login')),
       body: SafeArea(
-        // status bar avoiding
         child: SingleChildScrollView(
-          // Keyboard avoiding
           padding: const EdgeInsets.all(24),
           child: Form(
             key: _formKey,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const SizedBox(height: 96),
-                const Text(
-                  'Welcome back!',
-                  style: TextStyle(
+                const LanguageSelector(),
+                const SizedBox(height: 70),
+                Text(
+                  AppLocalizations.of(context)!.welcomeBack,
+                  style: const TextStyle(
                     fontSize: 35,
                     fontWeight: FontWeight.bold,
                     color: AppColors.borderColor,
@@ -262,16 +307,24 @@ class _LoginPageState extends State<LoginPage> {
                 TextFormField(
                   controller: _emailController,
                   keyboardType: TextInputType.emailAddress,
-                  decoration: const InputDecoration(
-                    labelText: 'Email',
-                    prefixIcon: Icon(Icons.email_outlined),
+                  decoration: InputDecoration(
+                    labelText: AppLocalizations.of(context)!.email,
+                    prefixIcon: const Icon(Icons.email_outlined),
                   ),
                   validator: (value) {
+                    final l10n = AppLocalizations.of(context)!;
+
                     if (value == null || value.trim().isEmpty) {
-                      return 'Enter email'; // error text
+                      return l10n.enterEmail;
                     }
-                    if (!value.contains('@')) return 'Invalid email';
-                    return null; // null = no error
+
+                    final emailRegex = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+
+                    if (!emailRegex.hasMatch(value.trim())) {
+                      return l10n.enterValidEmail;
+                    }
+
+                    return null;
                   },
                 ),
                 const SizedBox(height: 32),
@@ -280,7 +333,7 @@ class _LoginPageState extends State<LoginPage> {
                   controller: _passwordController,
                   obscureText: _obscurePassword,
                   decoration: InputDecoration(
-                    labelText: 'Password',
+                    labelText: AppLocalizations.of(context)!.password,
                     prefixIcon: const Icon(Icons.lock_outline),
                     suffixIcon: IconButton(
                       icon: Icon(
@@ -294,9 +347,16 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                   ),
                   validator: (value) {
-                    if (value == null || value.length < 8) {
-                      return '8 characters minimum';
+                    final l10n = AppLocalizations.of(context)!;
+
+                    if (value == null || value.isEmpty) {
+                      return l10n.enterPassword;
                     }
+
+                    if (value.length < 8) {
+                      return l10n.passwordMinLength;
+                    }
+
                     return null;
                   },
                 ),
@@ -316,7 +376,10 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     child: _isLoading
                         ? const CircularProgressIndicator(color: Colors.white)
-                        : const Text('Sign In', style: TextStyle(fontSize: 16)),
+                        : Text(
+                            AppLocalizations.of(context)!.loginButton,
+                            style: const TextStyle(fontSize: 16),
+                          ),
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -373,7 +436,7 @@ class _RegistrationPageState extends State<RegistrationPage> {
           'full_name': _nameController.text.trim(),
           'email': _emailController.text.trim(),
           'password': _passwordController.text,
-          'preferred_language': 'en',
+          'preferred_language': AppLocale.current.value.languageCode,
         }),
       );
 
@@ -383,12 +446,13 @@ class _RegistrationPageState extends State<RegistrationPage> {
 
       if (response.statusCode == 201) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Account created! Check your email.')),
+          SnackBar(content: Text(AppLocalizations.of(context)!.accountCreated)),
         );
       } else {
         final message = data is Map
-            ? data['detail']?.toString() ?? 'Registration failed'
-            : 'Registration failed';
+            ? data['detail']?.toString() ??
+                  AppLocalizations.of(context)!.registrationFailed
+            : AppLocalizations.of(context)!.registrationFailed;
 
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(message)));
@@ -396,8 +460,9 @@ class _RegistrationPageState extends State<RegistrationPage> {
     } catch (e) {
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Connection error: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(AppLocalizations.of(context)!.connectionError)),
+      );
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
@@ -419,10 +484,11 @@ class _RegistrationPageState extends State<RegistrationPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const SizedBox(height: 48),
-                const Text(
-                  'Create your account',
-                  style: TextStyle(
+                const LanguageSelector(),
+                const SizedBox(height: 24),
+                Text(
+                  AppLocalizations.of(context)!.createAccountTitle,
+                  style: const TextStyle(
                     fontSize: 35,
                     fontWeight: FontWeight.bold,
                     color: AppColors.borderColor,
@@ -434,22 +500,44 @@ class _RegistrationPageState extends State<RegistrationPage> {
                 TextFormField(
                   controller: _nameController,
                   keyboardType: TextInputType.text,
-                  decoration: const InputDecoration(
-                    labelText: 'Name',
-                    prefixIcon: Icon(Icons.person),
+                  decoration: InputDecoration(
+                    labelText: AppLocalizations.of(context)!.fullName,
+                    prefixIcon: const Icon(Icons.person),
                   ),
-                  validator: (v) => Validators.required(v, field: 'Name'),
+                  validator: (value) {
+                    final l10n = AppLocalizations.of(context)!;
+
+                    if (value == null || value.trim().isEmpty) {
+                      return l10n.nameRequired;
+                    }
+
+                    return null;
+                  },
                 ),
                 const SizedBox(height: 32),
 
                 TextFormField(
                   controller: _emailController,
                   keyboardType: TextInputType.emailAddress,
-                  decoration: const InputDecoration(
-                    labelText: 'Email',
-                    prefixIcon: Icon(Icons.email_outlined),
+                  decoration: InputDecoration(
+                    labelText: AppLocalizations.of(context)!.email,
+                    prefixIcon: const Icon(Icons.email_outlined),
                   ),
-                  validator: (v) => Validators.email(v),
+                  validator: (value) {
+                    final l10n = AppLocalizations.of(context)!;
+
+                    if (value == null || value.trim().isEmpty) {
+                      return l10n.enterEmail;
+                    }
+
+                    final emailRegex = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+
+                    if (!emailRegex.hasMatch(value.trim())) {
+                      return l10n.enterValidEmail;
+                    }
+
+                    return null;
+                  },
                 ),
                 const SizedBox(height: 32),
 
@@ -457,28 +545,7 @@ class _RegistrationPageState extends State<RegistrationPage> {
                   controller: _passwordController,
                   obscureText: _obscurePassword,
                   decoration: InputDecoration(
-                    labelText: 'Password',
-                    prefixIcon: const Icon(Icons.lock_outline),
-                    suffixIcon: IconButton(
-                      icon: Icon(
-                        _obscurePassword
-                            ? Icons.visibility_off
-                            : Icons.visibility,
-                      ),
-                      onPressed: () {
-                        setState(() => _obscurePassword = !_obscurePassword);
-                      },
-                    ),
-                  ),
-                  validator: (v) => Validators.password(v),
-                ),
-
-                const SizedBox(height: 32),
-                TextFormField(
-                  controller: _confirmPasswordController,
-                  obscureText: _obscurePassword,
-                  decoration: InputDecoration(
-                    labelText: 'Confirm Password',
+                    labelText: AppLocalizations.of(context)!.password,
                     prefixIcon: const Icon(Icons.lock_outline),
                     suffixIcon: IconButton(
                       icon: Icon(
@@ -492,13 +559,49 @@ class _RegistrationPageState extends State<RegistrationPage> {
                     ),
                   ),
                   validator: (value) {
+                    final l10n = AppLocalizations.of(context)!;
+
                     if (value == null || value.isEmpty) {
-                      return 'Repeat your password';
+                      return l10n.enterPassword;
+                    }
+
+                    if (value.length < 8) {
+                      return l10n.passwordMinLength;
+                    }
+
+                    return null;
+                  },
+                ),
+
+                const SizedBox(height: 32),
+                TextFormField(
+                  controller: _confirmPasswordController,
+                  obscureText: _obscurePassword,
+                  decoration: InputDecoration(
+                    labelText: AppLocalizations.of(context)!.confirmPassword,
+                    prefixIcon: const Icon(Icons.lock_outline),
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _obscurePassword
+                            ? Icons.visibility_off
+                            : Icons.visibility,
+                      ),
+                      onPressed: () {
+                        setState(() => _obscurePassword = !_obscurePassword);
+                      },
+                    ),
+                  ),
+                  validator: (value) {
+                    final l10n = AppLocalizations.of(context)!;
+
+                    if (value == null || value.isEmpty) {
+                      return l10n.repeatPasswordRequired;
                     }
 
                     if (value != _passwordController.text) {
-                      return 'Passwords do not match';
+                      return l10n.passwordsDoNotMatch;
                     }
+
                     return null;
                   },
                 ),
@@ -518,7 +621,10 @@ class _RegistrationPageState extends State<RegistrationPage> {
                     ),
                     child: _isLoading
                         ? const CircularProgressIndicator(color: Colors.white)
-                        : const Text('Sign Up', style: TextStyle(fontSize: 16)),
+                        : Text(
+                            AppLocalizations.of(context)!.registerButton,
+                            style: const TextStyle(fontSize: 16),
+                          ),
                   ),
                 ),
                 const SizedBox(height: 16),
@@ -577,14 +683,15 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              data['detail'] ?? 'Check your email for the reset link.',
+              data['detail'] ?? AppLocalizations.of(context)!.checkEmailReset,
             ),
           ),
         );
       } else {
         final message = data is Map
-            ? data['detail']?.toString() ?? 'Request failed'
-            : 'Request failed';
+            ? data['detail']?.toString() ??
+                  AppLocalizations.of(context)!.requestFailed
+            : AppLocalizations.of(context)!.requestFailed;
 
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(message)));
@@ -592,8 +699,9 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     } catch (e) {
       if (!mounted) return;
 
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('Connection error: $e')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(AppLocalizations.of(context)!.connectionError)),
+      );
     } finally {
       if (mounted) {
         setState(() => _isLoading = false);
@@ -614,10 +722,11 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const SizedBox(height: 192),
-                const Text(
-                  'Password recovery',
-                  style: TextStyle(
+                const LanguageSelector(),
+                const SizedBox(height: 120),
+                Text(
+                  AppLocalizations.of(context)!.forgotPassword,
+                  style: const TextStyle(
                     fontSize: 35,
                     fontWeight: FontWeight.bold,
                     color: AppColors.borderColor,
@@ -629,16 +738,24 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                 TextFormField(
                   controller: _emailController,
                   keyboardType: TextInputType.emailAddress,
-                  decoration: const InputDecoration(
-                    labelText: 'Email',
-                    prefixIcon: Icon(Icons.email_outlined),
+                  decoration: InputDecoration(
+                    labelText: AppLocalizations.of(context)!.email,
+                    prefixIcon: const Icon(Icons.email_outlined),
                   ),
                   validator: (value) {
+                    final l10n = AppLocalizations.of(context)!;
+
                     if (value == null || value.trim().isEmpty) {
-                      return 'Enter email'; // error text
+                      return l10n.enterEmail;
                     }
-                    if (!value.contains('@')) return 'Invalid email';
-                    return null; // null = no error
+
+                    final emailRegex = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
+
+                    if (!emailRegex.hasMatch(value.trim())) {
+                      return l10n.enterValidEmail;
+                    }
+
+                    return null;
                   },
                 ),
 
@@ -657,7 +774,7 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
                     ),
                     child: _isLoading
                         ? const CircularProgressIndicator(color: Colors.white)
-                        : const Text('Recover Password'),
+                        : Text(AppLocalizations.of(context)!.recoverPassword),
                   ),
                 ),
                 const SizedBox(height: 16),
