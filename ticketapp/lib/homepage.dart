@@ -1,5 +1,10 @@
 import 'package:flutter/material.dart';
+
+import 'event_model.dart';
+import 'event_service.dart';
 import 'current_user.dart';
+import 'ticket_type_model.dart';
+import 'ticket_model.dart';
 import 'auth_service.dart';
 import 'auth.dart' show AppColors, AuthPage;
 
@@ -55,23 +60,8 @@ IconData categoryIcon(String category) {
 }
 
 //--------------------------------
-// Models + fake data (later replaced by server data)
+// Models + fake data
 //--------------------------------
-class EventItem {
-  final String title;
-  final String category;
-  final String city;
-  final DateTime date;
-  final int price; // 0 = free
-
-  EventItem({
-    required this.title,
-    required this.category,
-    required this.city,
-    required this.date,
-    required this.price,
-  });
-}
 
 class TicketItem {
   final String eventTitle;
@@ -120,65 +110,6 @@ class SupportCase {
     required this.status,
   });
 }
-
-final List<EventItem> allEvents = [
-  EventItem(
-    title: 'Astana Jazz Night',
-    category: 'Music',
-    city: 'Astana',
-    date: DateTime(2026, 12, 5),
-    price: 8000,
-  ),
-  EventItem(
-    title: 'Modern Art Expo',
-    category: 'Art',
-    city: 'Astana',
-    date: DateTime(2026, 12, 8),
-    price: 2500,
-  ),
-  EventItem(
-    title: 'Flutter Kazakhstan Meetup',
-    category: 'Tech',
-    city: 'Astana',
-    date: DateTime(2026, 12, 12),
-    price: 0,
-  ),
-  EventItem(
-    title: 'Chess Open',
-    category: 'Sport',
-    city: 'Astana',
-    date: DateTime(2026, 12, 15),
-    price: 0,
-  ),
-  EventItem(
-    title: 'Winter Marathon 10K',
-    category: 'Sport',
-    city: 'Almaty',
-    date: DateTime(2026, 12, 20),
-    price: 3000,
-  ),
-  EventItem(
-    title: 'Indie Rock Open Air',
-    category: 'Music',
-    city: 'Almaty',
-    date: DateTime(2026, 12, 27),
-    price: 12000,
-  ),
-  EventItem(
-    title: 'Street Food Festival',
-    category: 'Food',
-    city: 'Shymkent',
-    date: DateTime(2027, 1, 15),
-    price: 1500,
-  ),
-  EventItem(
-    title: 'AI Conference 2027',
-    category: 'Tech',
-    city: 'Almaty',
-    date: DateTime(2027, 2, 3),
-    price: 25000,
-  ),
-];
 
 final List<TicketItem> allTickets = [
   TicketItem(
@@ -355,6 +286,7 @@ class IconText extends StatelessWidget {
 // Main page with bottom navigation
 //--------------------------------
 typedef RefreshUser = Future<CurrentUser?> Function();
+
 class Homepage extends StatefulWidget {
   final String accessToken;
   final CurrentUser currentUser;
@@ -372,7 +304,6 @@ class Homepage extends StatefulWidget {
 class _HomepageState extends State<Homepage> {
   int selectedIndex = 0;
   late CurrentUser _user;
-
 
   @override
   void initState() {
@@ -399,8 +330,8 @@ class _HomepageState extends State<Homepage> {
   @override
   Widget build(BuildContext context) {
     final tabs = <Widget>[
-      const EventsTab(),
-      const TicketsTab(),
+      EventsTab(accessToken: widget.accessToken),
+      TicketsTab(accessToken: widget.accessToken),
       OrganizersTab(user: _user, onRefresh: _refreshUser),
       ProfileTab(user: _user, onRefresh: _refreshUser),
     ];
@@ -438,22 +369,23 @@ class _HomepageState extends State<Homepage> {
 //--------------------------------
 // Tab 1: Events (search, category filter, sorting)
 //--------------------------------
+
 class EventsTab extends StatefulWidget {
-  const EventsTab({super.key});
+  final String accessToken;
+
+  const EventsTab({super.key, required this.accessToken});
 
   @override
   State<EventsTab> createState() => _EventsTabState();
 }
 
 class _EventsTabState extends State<EventsTab> {
-  final List<String> categories = [
-    'All',
-    'Music',
-    'Tech',
-    'Sport',
-    'Art',
-    'Food',
-  ];
+  final EventService _eventService = EventService();
+
+  List<ApiEvent> _events = [];
+  bool _isLoading = true;
+  String? _error;
+
   final List<String> sortOptions = [
     'Date: soonest',
     'Price: low to high',
@@ -466,73 +398,102 @@ class _EventsTabState extends State<EventsTab> {
   String sortBy = 'Date: soonest';
   bool freeOnly = false;
 
-  // Applies search + filters + sorting to the full list
-  List<EventItem> get visibleEvents {
-    final result = allEvents.where((e) {
-      final matchesSearch = e.title.toLowerCase().contains(
-        search.toLowerCase(),
-      );
-      final matchesCategory = category == 'All' || e.category == category;
-      final matchesFree = !freeOnly || e.price == 0;
+  List<String> get categories {
+    final eventCategories =
+        _events
+            .map((event) => _categoryLabel(event.category))
+            .where((value) => value.isNotEmpty)
+            .toSet()
+            .toList()
+          ..sort();
+
+    return ['All', ...eventCategories];
+  }
+
+  String _categoryLabel(String value) {
+    if (value.isEmpty) return '';
+    return value[0].toUpperCase() + value.substring(1).toLowerCase();
+  }
+
+  Future<void> _loadEvents() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    try {
+      final events = await _eventService.fetchEvents();
+
+      if (!mounted) return;
+
+      setState(() {
+        _events = events;
+        _isLoading = false;
+
+        if (category != 'All' && !categories.contains(category)) {
+          category = 'All';
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        _error = e.toString();
+        _isLoading = false;
+      });
+    }
+  }
+
+  List<ApiEvent> get visibleEvents {
+    final result = _events.where((event) {
+      final query = search.toLowerCase();
+
+      final matchesSearch =
+          event.title.toLowerCase().contains(query) ||
+          event.city.toLowerCase().contains(query) ||
+          event.venueName.toLowerCase().contains(query);
+
+      final matchesCategory =
+          category == 'All' || _categoryLabel(event.category) == category;
+
+      final matchesFree = !freeOnly || event.priceFromKzt == 0;
+
       return matchesSearch && matchesCategory && matchesFree;
     }).toList();
 
     if (sortBy == 'Date: soonest') {
-      result.sort((a, b) => a.date.compareTo(b.date));
+      result.sort((a, b) => a.startAt.compareTo(b.startAt));
     } else if (sortBy == 'Price: low to high') {
-      result.sort((a, b) => a.price.compareTo(b.price));
+      result.sort((a, b) => a.priceFromKzt.compareTo(b.priceFromKzt));
     } else if (sortBy == 'Price: high to low') {
-      result.sort((a, b) => b.price.compareTo(a.price));
+      result.sort((a, b) => b.priceFromKzt.compareTo(a.priceFromKzt));
     } else {
       result.sort((a, b) => a.title.compareTo(b.title));
     }
+
     return result;
   }
 
-  void showEventDetails(EventItem event) {
+  void showEventDetails(ApiEvent event) {
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: AppColors.accentColor,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (sheetContext) => Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              event.title,
-              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            IconText(categoryIcon(event.category), event.category),
-            IconText(Icons.location_on_outlined, event.city),
-            IconText(Icons.calendar_today, formatDate(event.date)),
-            const SizedBox(height: 12),
-            Text(
-              formatPrice(event.price),
-              style: const TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: AppColors.primaryColor,
-              ),
-            ),
-            const SizedBox(height: 24),
-            PrimaryButton(
-              text: event.price == 0 ? 'Register' : 'Buy ticket',
-              onPressed: () {
-                Navigator.pop(sheetContext);
-                ScaffoldMessenger.of(
-                  context,
-                ).showSnackBar(SnackBar(content: Text('Demo: ${event.title}')));
-              },
-            ),
-          ],
-        ),
+      builder: (_) => EventDetailsSheet(
+        event: event,
+        eventService: _eventService,
+        accessToken: widget.accessToken,
       ),
     );
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadEvents();
   }
 
   @override
@@ -548,7 +509,6 @@ class _EventsTabState extends State<EventsTab> {
             const Text('Events', style: pageTitle),
             const SizedBox(height: 12),
 
-            // Search
             TextField(
               decoration: const InputDecoration(
                 hintText: 'Search events',
@@ -558,13 +518,13 @@ class _EventsTabState extends State<EventsTab> {
             ),
             const SizedBox(height: 12),
 
-            // Category chips (scroll sideways)
             SizedBox(
               height: 40,
               child: ListView(
                 scrollDirection: Axis.horizontal,
                 children: categories.map((c) {
                   final selected = category == c;
+
                   return Padding(
                     padding: const EdgeInsets.only(right: 8),
                     child: ChoiceChip(
@@ -576,14 +536,15 @@ class _EventsTabState extends State<EventsTab> {
                       labelStyle: TextStyle(
                         color: selected ? Colors.white : AppColors.textMain,
                       ),
-                      onSelected: (_) => setState(() => category = c),
+                      onSelected: (_) {
+                        setState(() => category = c);
+                      },
                     ),
                   );
                 }).toList(),
               ),
             ),
 
-            // Sorting + free only
             Row(
               children: [
                 const Icon(Icons.sort, color: Colors.black54),
@@ -592,29 +553,56 @@ class _EventsTabState extends State<EventsTab> {
                   value: sortBy,
                   underline: const SizedBox(),
                   items: sortOptions
-                      .map((o) => DropdownMenuItem(value: o, child: Text(o)))
+                      .map(
+                        (option) => DropdownMenuItem(
+                          value: option,
+                          child: Text(option),
+                        ),
+                      )
                       .toList(),
-                  onChanged: (value) => setState(() => sortBy = value!),
+                  onChanged: (value) {
+                    if (value != null) {
+                      setState(() => sortBy = value);
+                    }
+                  },
                 ),
                 const Spacer(),
                 const Text('Free only'),
                 Switch(
                   value: freeOnly,
                   activeTrackColor: AppColors.primaryColor,
-                  onChanged: (value) => setState(() => freeOnly = value),
+                  onChanged: (value) {
+                    setState(() => freeOnly = value);
+                  },
                 ),
               ],
             ),
 
-            // The scrollable list of event blocks
             Expanded(
-              child: events.isEmpty
+              child: _isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : _error != null
+                  ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text('Could not load events.'),
+                          const SizedBox(height: 12),
+                          ElevatedButton(
+                            onPressed: _loadEvents,
+                            child: const Text('Try again'),
+                          ),
+                        ],
+                      ),
+                    )
+                  : events.isEmpty
                   ? const Center(child: Text('No events found'))
                   : ListView.builder(
                       padding: const EdgeInsets.only(bottom: 16),
                       itemCount: events.length,
                       itemBuilder: (context, index) {
                         final event = events[index];
+
                         return EventCard(
                           event: event,
                           onTap: () => showEventDetails(event),
@@ -629,8 +617,322 @@ class _EventsTabState extends State<EventsTab> {
   }
 }
 
+class EventDetailsSheet extends StatefulWidget {
+  final ApiEvent event;
+  final EventService eventService;
+  final String accessToken;
+
+  const EventDetailsSheet({
+    super.key,
+    required this.event,
+    required this.eventService,
+    required this.accessToken,
+  });
+
+  @override
+  State<EventDetailsSheet> createState() => _EventDetailsSheetState();
+}
+
+class _EventDetailsSheetState extends State<EventDetailsSheet> {
+  late Future<List<TicketType>> _ticketTypesFuture;
+
+  TicketType? _selectedTicket;
+  int _quantity = 1;
+  bool _isSubmitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _ticketTypesFuture = widget.eventService.fetchTicketTypes(widget.event.id);
+  }
+
+  Future<void> _checkout(TicketType ticket) async {
+    if (_isSubmitting) return;
+
+    final isFree = ticket.priceKzt == 0;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(isFree ? 'Confirm registration' : 'Confirm purchase'),
+        content: Text(
+          isFree
+              ? 'Register for ${widget.event.title}?'
+              : 'Purchase $_quantity × ${ticket.name} '
+                    'for ${formatPrice(ticket.priceKzt * _quantity)}?\n\n'
+                    'Payment is simulated in this version.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    setState(() => _isSubmitting = true);
+
+    try {
+      final order = await widget.eventService.createOrder(
+        eventId: widget.event.id,
+        ticketTypeId: ticket.id,
+        quantity: _quantity,
+        accessToken: widget.accessToken,
+      );
+
+      Map<String, dynamic> result = order;
+
+      if (!isFree) {
+        result = await widget.eventService.payOrder(
+          orderId: order['id'].toString(),
+          accessToken: widget.accessToken,
+        );
+      }
+
+      if (!mounted) return;
+
+      final status = result['status']?.toString() ?? '';
+
+      Navigator.pop(context);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            status == 'confirmed'
+                ? 'Order confirmed! Your tickets are ready.'
+                : 'Order status: $status',
+          ),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('Order failed: $e')));
+    } finally {
+      if (mounted) {
+        setState(() => _isSubmitting = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final event = widget.event;
+
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          24,
+          24,
+          24,
+          24 + MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                event.title,
+                style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+
+              if (event.category.isNotEmpty)
+                IconText(categoryIcon(event.category), event.category),
+
+              IconText(Icons.location_on_outlined, event.city),
+
+              if (event.venueName.isNotEmpty)
+                IconText(Icons.place_outlined, event.venueName),
+
+              IconText(Icons.calendar_today, formatDate(event.startAt)),
+
+              if (event.description != null &&
+                  event.description!.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text(event.description!),
+              ],
+
+              const SizedBox(height: 20),
+              const Text(
+                'Available tickets',
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+
+              FutureBuilder<List<TicketType>>(
+                future: _ticketTypesFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Center(child: CircularProgressIndicator()),
+                    );
+                  }
+
+                  if (snapshot.hasError) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Could not load ticket types.'),
+                        TextButton(
+                          onPressed: () {
+                            setState(() {
+                              _ticketTypesFuture = widget.eventService
+                                  .fetchTicketTypes(event.id);
+                            });
+                          },
+                          child: const Text('Try again'),
+                        ),
+                      ],
+                    );
+                  }
+
+                  final tickets = snapshot.data ?? [];
+
+                  if (tickets.isEmpty) {
+                    return const Text('No ticket types available.');
+                  }
+
+                  final availableTickets = tickets
+                      .where((ticket) => ticket.isAvailable)
+                      .toList();
+
+                  if (availableTickets.isEmpty) {
+                    return const Text('All tickets are currently unavailable.');
+                  }
+
+                  final selected = availableTickets.firstWhere(
+                    (ticket) => ticket.id == _selectedTicket?.id,
+                    orElse: () => availableTickets.first,
+                  );
+
+                  if (_selectedTicket?.id != selected.id) {
+                    _selectedTicket = selected;
+                    _quantity = 1;
+                  }
+
+                  final maxQuantity = [
+                    selected.available,
+                    selected.maxPerOrder,
+                    10,
+                  ].reduce((a, b) => a < b ? a : b);
+
+                  if (_quantity > maxQuantity) {
+                    _quantity = maxQuantity;
+                  }
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      RadioGroup<String>(
+  groupValue: selected.id,
+  onChanged: (value) {
+    if (value == null) return;
+
+    final ticket = availableTickets.firstWhere(
+      (ticket) => ticket.id == value,
+    );
+
+    setState(() {
+      _selectedTicket = ticket;
+      _quantity = 1;
+    });
+  },
+  child: Column(
+    children: availableTickets.map((ticket) {
+      return RadioListTile<String>(
+        contentPadding: EdgeInsets.zero,
+        value: ticket.id,
+        title: Text(ticket.name),
+        subtitle: Text(
+          '${formatPrice(ticket.priceKzt)}'
+          ' • ${ticket.available} available',
+        ),
+      );
+    }).toList(),
+  ),
+),
+
+
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          const Expanded(
+                            child: Text(
+                              'Quantity',
+                              style: TextStyle(fontWeight: FontWeight.w600),
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: _quantity > 1
+                                ? () => setState(() => _quantity--)
+                                : null,
+                            icon: const Icon(Icons.remove_circle_outline),
+                          ),
+                          Text(
+                            '$_quantity',
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                          IconButton(
+                            onPressed: _quantity < maxQuantity
+                                ? () => setState(() => _quantity++)
+                                : null,
+                            icon: const Icon(Icons.add_circle_outline),
+                          ),
+                        ],
+                      ),
+
+                      const SizedBox(height: 8),
+                      Text(
+                        'Total: ${formatPrice(selected.priceKzt * _quantity)}',
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: AppColors.primaryColor,
+                        ),
+                      ),
+
+                      const SizedBox(height: 20),
+                      PrimaryButton(
+                        text: _isSubmitting
+                            ? 'Processing...'
+                            : selected.priceKzt == 0
+                            ? 'Register'
+                            : 'Buy ticket',
+                        onPressed: _isSubmitting
+                            ? () {}
+                            : () => _checkout(selected),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class EventCard extends StatelessWidget {
-  final EventItem event;
+  final ApiEvent event;
   final VoidCallback onTap;
 
   const EventCard({super.key, required this.event, required this.onTap});
@@ -641,7 +943,6 @@ class EventCard extends StatelessWidget {
       onTap: onTap,
       child: Row(
         children: [
-          // Placeholder for the event image
           Container(
             width: 70,
             height: 70,
@@ -649,11 +950,25 @@ class EventCard extends StatelessWidget {
               color: AppColors.primaryColor.withAlpha(40),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Icon(
-              categoryIcon(event.category),
-              color: AppColors.primaryColor,
-              size: 32,
-            ),
+            clipBehavior: Clip.antiAlias,
+            child:
+                event.coverImageUrl != null && event.coverImageUrl!.isNotEmpty
+                ? Image.network(
+                    event.coverImageUrl!,
+                    fit: BoxFit.cover,
+                    errorBuilder: (context, error, stackTrace) {
+                      return Icon(
+                        categoryIcon(event.category),
+                        color: AppColors.primaryColor,
+                        size: 32,
+                      );
+                    },
+                  )
+                : Icon(
+                    categoryIcon(event.category),
+                    color: AppColors.primaryColor,
+                    size: 32,
+                  ),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -669,11 +984,11 @@ class EventCard extends StatelessWidget {
                     fontWeight: FontWeight.bold,
                   ),
                 ),
-                IconText(Icons.calendar_today, formatDate(event.date)),
+                IconText(Icons.calendar_today, formatDate(event.startAt)),
                 IconText(Icons.location_on_outlined, event.city),
                 const SizedBox(height: 6),
                 Text(
-                  formatPrice(event.price),
+                  formatPrice(event.priceFromKzt),
                   style: const TextStyle(
                     fontWeight: FontWeight.bold,
                     color: AppColors.primaryColor,
@@ -691,122 +1006,205 @@ class EventCard extends StatelessWidget {
 //--------------------------------
 // Tab 2: Tickets (Upcoming / Past)
 //--------------------------------
+
 class TicketsTab extends StatefulWidget {
-  const TicketsTab({super.key});
+  final String accessToken;
+
+  const TicketsTab({
+    super.key,
+    required this.accessToken,
+  });
 
   @override
   State<TicketsTab> createState() => _TicketsTabState();
 }
 
 class _TicketsTabState extends State<TicketsTab> {
-  void showTicketDetails(TicketItem ticket) {
-    final canRefund =
-        ticket.status == 'Paid' && ticket.date.isAfter(DateTime.now());
+  final EventService _eventService = EventService();
 
+  late Future<List<ApiTicket>> _ticketsFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTickets();
+  }
+
+  void _loadTickets() {
+    _ticketsFuture = _eventService.fetchMyTickets(widget.accessToken);
+  }
+
+  Future<void> _refreshTickets() async {
+    setState(_loadTickets);
+    await _ticketsFuture;
+  }
+
+  void showTicketDetails(ApiTicket ticket) {
     showModalBottomSheet(
       context: context,
       backgroundColor: AppColors.accentColor,
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(20),
+        ),
       ),
       builder: (sheetContext) => Padding(
         padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              ticket.eventTitle,
-              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 8),
-            Text('${ticket.ticketType} • ${formatDate(ticket.date)}'),
-            const SizedBox(height: 16),
-            // Placeholder for the real QR code
-            const Icon(Icons.qr_code_2, size: 160),
-            const SizedBox(height: 16),
-            PrimaryButton(
-              text: 'Download PDF',
-              onPressed: () {
-                Navigator.pop(sheetContext);
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Demo: PDF download')),
-                );
-              },
-            ),
-            if (canRefund) ...[
-              const SizedBox(height: 12),
-              TextButton(
-                onPressed: () {
-                  setState(() => ticket.status = 'Refunded');
-                  Navigator.pop(sheetContext);
-                },
-                child: const Text(
-                  'Request refund',
-                  style: TextStyle(color: Colors.red),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                ticket.eventTitle,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
                 ),
               ),
+              const SizedBox(height: 12),
+
+              Text(ticket.ticketTypeName),
+              const SizedBox(height: 8),
+
+              IconText(
+                Icons.calendar_today,
+                formatDate(ticket.eventStartAt),
+              ),
+
+              if (ticket.city.isNotEmpty)
+                IconText(Icons.location_on_outlined, ticket.city),
+
+              if (ticket.venueName.isNotEmpty)
+                IconText(Icons.place_outlined, ticket.venueName),
+
+              const SizedBox(height: 16),
+              StatusChip(ticket.status),
+              const SizedBox(height: 20),
+
+              const Icon(Icons.qr_code_2, size: 100),
+              const SizedBox(height: 8),
+
+              const Text(
+                'Ticket QR payload',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+
+              SelectableText(
+                ticket.qrPayload ?? 'QR payload is not available',
+                textAlign: TextAlign.center,
+              ),
+
+              const SizedBox(height: 20),
+              Text(
+                'Attendee: ${ticket.attendeeName}',
+                textAlign: TextAlign.center,
+              ),
+              Text(
+                ticket.attendeeEmail,
+                style: const TextStyle(color: Colors.black54),
+              ),
             ],
-          ],
+          ),
         ),
       ),
     );
   }
 
-  Widget buildList(List<TicketItem> tickets) {
-    if (tickets.isEmpty) {
-      return const Center(child: Text('No tickets here yet'));
-    }
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: tickets.length,
-      itemBuilder: (context, index) {
-        final ticket = tickets[index];
-        return InfoCard(
-          onTap: () => showTicketDetails(ticket),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _ticketCard(ApiTicket ticket) {
+    return InfoCard(
+      onTap: () => showTicketDetails(ticket),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      ticket.eventTitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
+              Expanded(
+                child: Text(
+                  ticket.eventTitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
                   ),
-                  StatusChip(ticket.status),
-                ],
+                ),
               ),
-              IconText(Icons.calendar_today, formatDate(ticket.date)),
-              IconText(Icons.location_on_outlined, ticket.place),
-              const SizedBox(height: 8),
+              StatusChip(ticket.status),
+            ],
+          ),
+
+          IconText(
+            Icons.confirmation_number_outlined,
+            ticket.ticketTypeName,
+          ),
+
+          IconText(
+            Icons.calendar_today,
+            formatDate(ticket.eventStartAt),
+          ),
+
+          if (ticket.city.isNotEmpty)
+            IconText(Icons.location_on_outlined, ticket.city),
+
+          const SizedBox(height: 8),
+          const Row(
+            children: [
+              Icon(
+                Icons.qr_code_2,
+                color: AppColors.primaryColor,
+              ),
+              SizedBox(width: 6),
               Text(
-                '${ticket.ticketType} • ${formatPrice(ticket.price)}',
-                style: const TextStyle(fontWeight: FontWeight.w600),
+                'Tap to view ticket',
+                style: TextStyle(
+                  color: AppColors.primaryColor,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
             ],
           ),
-        );
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTicketList(List<ApiTicket> tickets, bool upcoming) {
+    final now = DateTime.now();
+
+    final filtered = tickets.where((ticket) {
+      final isUpcoming = ticket.eventStartAt.isAfter(now);
+      return upcoming ? isUpcoming : !isUpcoming;
+    }).toList();
+
+    filtered.sort(
+      (a, b) => upcoming
+          ? a.eventStartAt.compareTo(b.eventStartAt)
+          : b.eventStartAt.compareTo(a.eventStartAt),
+    );
+
+    if (filtered.isEmpty) {
+      return Center(
+        child: Text(
+          upcoming
+              ? 'No upcoming tickets yet'
+              : 'No past tickets yet',
+        ),
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: filtered.length,
+      itemBuilder: (context, index) {
+        return _ticketCard(filtered[index]);
       },
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final now = DateTime.now();
-
-    // Upcoming: soonest first. Past: most recent first
-    final upcoming = allTickets.where((t) => t.date.isAfter(now)).toList()
-      ..sort((a, b) => a.date.compareTo(b.date));
-    final past = allTickets.where((t) => !t.date.isAfter(now)).toList()
-      ..sort((a, b) => b.date.compareTo(a.date));
-
     return SafeArea(
       child: DefaultTabController(
         length: 2,
@@ -819,6 +1217,7 @@ class _TicketsTabState extends State<TicketsTab> {
                 child: Text('My tickets', style: pageTitle),
               ),
             ),
+
             const TabBar(
               labelColor: AppColors.primaryColor,
               unselectedLabelColor: AppColors.borderColor,
@@ -828,9 +1227,51 @@ class _TicketsTabState extends State<TicketsTab> {
                 Tab(text: 'Past'),
               ],
             ),
+
             Expanded(
-              child: TabBarView(
-                children: [buildList(upcoming), buildList(past)],
+              child: FutureBuilder<List<ApiTicket>>(
+                future: _ticketsFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState ==
+                      ConnectionState.waiting) {
+                    return const Center(
+                      child: CircularProgressIndicator(),
+                    );
+                  }
+
+                  if (snapshot.hasError) {
+                    return Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text('Could not load your tickets.'),
+                          const SizedBox(height: 12),
+                          ElevatedButton(
+                            onPressed: () {
+                              setState(_loadTickets);
+                            },
+                            child: const Text('Try again'),
+                          ),
+                        ],
+                      ),
+                    );
+                  }
+
+                  final tickets = snapshot.data ?? [];
+
+                  return TabBarView(
+                    children: [
+                      RefreshIndicator(
+                        onRefresh: _refreshTickets,
+                        child: _buildTicketList(tickets, true),
+                      ),
+                      RefreshIndicator(
+                        onRefresh: _refreshTickets,
+                        child: _buildTicketList(tickets, false),
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
           ],
@@ -840,6 +1281,7 @@ class _TicketsTabState extends State<TicketsTab> {
   }
 }
 
+
 //--------------------------------
 // Tab 3: For organizers
 //--------------------------------
@@ -847,11 +1289,7 @@ class OrganizersTab extends StatefulWidget {
   final CurrentUser user;
   final RefreshUser onRefresh;
 
-  const OrganizersTab({
-    super.key,
-    required this.user,
-    required this.onRefresh,
-  });
+  const OrganizersTab({super.key, required this.user, required this.onRefresh});
 
   @override
   State<OrganizersTab> createState() => _OrganizersTabState();
@@ -1047,68 +1485,69 @@ class _OrganizersTabState extends State<OrganizersTab> {
       ),
     );
   }
-@override
-Widget build(BuildContext context) {
-  final locked = !widget.user.isEmailVerified;
 
-  return Stack(
-    fit: StackFit.expand,
-    children: [
-      // Содержимое вкладки. Пока locked — нажатия не проходят
-      IgnorePointer(ignoring: locked, child: buildContent()),
-      // Блокировка поверх содержимого
-      if (locked) buildLockOverlay(),
-    ],
-  );
-}
+  @override
+  Widget build(BuildContext context) {
+    final locked = !widget.user.isEmailVerified;
 
-Widget buildLockOverlay() {
-  return Positioned.fill(
-    child: Container(
-      // Цвет перехватывает нажатия и почти скрывает содержимое
-      color: AppColors.backgroundColor.withAlpha(235),
-      padding: const EdgeInsets.all(24),
-      child: Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(
-              Icons.lock_outline,
-              size: 72,
-              color: AppColors.primaryColor,
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              'Verification required',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Verify your email ${widget.user.email} '
-              'to use organizer tools.',
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.black54),
-            ),
-            const SizedBox(height: 24),
-            PrimaryButton(
-              text: 'Verify email',
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => VerifyEmailPage(
-                    user: widget.user,
-                    onRefresh: widget.onRefresh,
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        // Содержимое вкладки. Пока locked — нажатия не проходят
+        IgnorePointer(ignoring: locked, child: buildContent()),
+        // Блокировка поверх содержимого
+        if (locked) buildLockOverlay(),
+      ],
+    );
+  }
+
+  Widget buildLockOverlay() {
+    return Positioned.fill(
+      child: Container(
+        // Цвет перехватывает нажатия и почти скрывает содержимое
+        color: AppColors.backgroundColor.withAlpha(235),
+        padding: const EdgeInsets.all(24),
+        child: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.lock_outline,
+                size: 72,
+                color: AppColors.primaryColor,
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Verification required',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Verify your email ${widget.user.email} '
+                'to use organizer tools.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.black54),
+              ),
+              const SizedBox(height: 24),
+              PrimaryButton(
+                text: 'Verify email',
+                onPressed: () => Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (_) => VerifyEmailPage(
+                      user: widget.user,
+                      onRefresh: widget.onRefresh,
+                    ),
                   ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
-    ),
-  );
-}
+    );
+  }
 
   Widget buildContent() {
     final totalSold = myEvents.fold<int>(0, (sum, e) => sum + e.sold);
@@ -1122,7 +1561,6 @@ Widget buildLockOverlay() {
           const SizedBox(height: 16),
 
           // Verification banner
-          
 
           // Stats
           Row(
@@ -1170,18 +1608,18 @@ class ProfileTab extends StatelessWidget {
             child: const Text('Cancel'),
           ),
           TextButton(
-  onPressed: () async {
-    Navigator.pop(dialogContext);
-    await logoutSession();
-    if (!context.mounted) return;
-    Navigator.pushAndRemoveUntil(
-      context,
-      MaterialPageRoute(builder: (_) => const AuthPage()),
-      (route) => false,
-    );
-  },
-  child: const Text('Log out', style: TextStyle(color: Colors.red)),
-),
+            onPressed: () async {
+              Navigator.pop(dialogContext);
+              await logoutSession();
+              if (!context.mounted) return;
+              Navigator.pushAndRemoveUntil(
+                context,
+                MaterialPageRoute(builder: (_) => const AuthPage()),
+                (route) => false,
+              );
+            },
+            child: const Text('Log out', style: TextStyle(color: Colors.red)),
+          ),
         ],
       ),
     );
@@ -1209,72 +1647,72 @@ class ProfileTab extends StatelessWidget {
   }
 
   @override
-Widget build(BuildContext context) {
-  return SafeArea(
-    child: ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        const Text('Profile', style: pageTitle),
-        const SizedBox(height: 24),
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          const Text('Profile', style: pageTitle),
+          const SizedBox(height: 24),
 
-
-        const Center(
-          child: CircleAvatar(
-            radius: 44,
-            backgroundColor: AppColors.primaryColor,
-            child: Icon(Icons.person, size: 48, color: Colors.white),
-          ),
-        ),
-        const SizedBox(height: 12),
-        Center(
-          child: Text(
-            user.fullName,
-            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-          ),
-        ),
-        Center(
-          child: Text(
-            user.email,
-            style: const TextStyle(color: Colors.black54),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Center(
-          child: StatusChip(user.isEmailVerified ? 'Verified' : 'Not verified'),
-        ),
-        const SizedBox(height: 24),
-
-
-        if (!user.isEmailVerified)
-          menuItem(
-            icon: Icons.mark_email_unread_outlined,
-            title: 'Verify email',
-            onTap: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) =>
-                    VerifyEmailPage(user: user, onRefresh: onRefresh),
-              ),
+          const Center(
+            child: CircleAvatar(
+              radius: 44,
+              backgroundColor: AppColors.primaryColor,
+              child: Icon(Icons.person, size: 48, color: Colors.white),
             ),
           ),
-        menuItem(
-          icon: Icons.support_agent,
-          title: 'Support',
-          onTap: () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => const SupportPage()),
+          const SizedBox(height: 12),
+          Center(
+            child: Text(
+              user.fullName,
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+            ),
           ),
-        ),
-        menuItem(
-          icon: Icons.logout,
-          title: 'Log out',
-          color: Colors.red,
-          onTap: () => confirmLogout(context),
-        ),
-      ],
-    ),
-  );
-}
+          Center(
+            child: Text(
+              user.email,
+              style: const TextStyle(color: Colors.black54),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Center(
+            child: StatusChip(
+              user.isEmailVerified ? 'Verified' : 'Not verified',
+            ),
+          ),
+          const SizedBox(height: 24),
+
+          if (!user.isEmailVerified)
+            menuItem(
+              icon: Icons.mark_email_unread_outlined,
+              title: 'Verify email',
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) =>
+                      VerifyEmailPage(user: user, onRefresh: onRefresh),
+                ),
+              ),
+            ),
+          menuItem(
+            icon: Icons.support_agent,
+            title: 'Support',
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const SupportPage()),
+            ),
+          ),
+          menuItem(
+            icon: Icons.logout,
+            title: 'Log out',
+            color: Colors.red,
+            onTap: () => confirmLogout(context),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 //--------------------------------
@@ -1313,7 +1751,9 @@ class _VerifyEmailPageState extends State<VerifyEmailPage> {
     if (fresh.isEmailVerified) {
       Navigator.pop(context); // вкладка организатора уже разблокирована
       messenger.showSnackBar(
-        const SnackBar(content: Text('Email verified. Organizer tools unlocked!')),
+        const SnackBar(
+          content: Text('Email verified. Organizer tools unlocked!'),
+        ),
       );
     } else {
       messenger.showSnackBar(
